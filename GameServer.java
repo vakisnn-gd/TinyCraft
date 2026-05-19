@@ -49,7 +49,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             tickThread = new Thread(this::runTickLoop, "TinyCraft dedicated tick");
             tickThread.setDaemon(false);
             tickThread.start();
-            System.out.println("TinyCraft Snapshot 9 dedicated server");
+            System.out.println("TinyCraft v0.2 Final dedicated server");
             System.out.println("World: " + resolved.directory);
             System.out.println("Seed: " + Long.toUnsignedString(resolved.seed, 16));
             System.out.println("MOTD: " + properties.motd);
