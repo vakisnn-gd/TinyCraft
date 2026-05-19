@@ -46,7 +46,7 @@ chmod +x run-server.sh
 port=25566
 world=server_world
 maxPlayers=8
-motd=TinyCraft Snapshot 8 Server
+motd=TinyCraft Snapshot 9 Server
 allowPvp=true
 allowCheats=false
 whitelist=false

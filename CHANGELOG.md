@@ -1,5 +1,33 @@
 # История изменений
 
+## v0.2 Snapshot 9
+
+Snapshot 9 стабилизирует dedicated server после Snapshot 8: добавляет server-authority MVP для инвентаря/контейнеров, усиливает сетевой протокол и вводит JUnit headless tests.
+
+### Добавлено
+
+- `INVENTORY_SYNC` для полного авторитетного состояния инвентаря клиента.
+- `CONTAINER_OPEN_REQUEST`, `CONTAINER_OPEN`, `CONTAINER_CLICK`, `CONTAINER_CLOSE`, `CONTAINER_UPDATE` для server-side окон сундуков, печек и верстака.
+- Серверная валидация открытия контейнеров по типу блока и дистанции игрока.
+- Серверная валидация `BLOCK_ACTION` по дистанции, координатам и авторитетному held item.
+- Rate limit для частых player state, chunk request, block action, attack, chat/command и container click пакетов.
+- JUnit 4, `run-tests.bat` и headless tests для протокола, inventory codecs, handshake и authority validation.
+
+### Изменено
+
+- Multiplayer protocol поднят до `VERSION = 4`.
+- Клиентский multiplayer mirror больше не применяет локально ломание/установку блоков до серверного `BLOCK_UPDATE`.
+- `/give`, `/clear`, `/gamemode` и `/tp` проходят через multiplayer/server command path.
+- README, FAQ, KNOWN_ISSUES и ROADMAP обновлены под Snapshot 9.
+- Клиент Snapshot 9 несовместим со Snapshot 8 host/server по сетевому протоколу.
+
+### Ограничения Snapshot 9
+
+- Это все еще prerelease без public server browser, relay/NAT traversal и внешних аккаунтов.
+- Server authority для buckets, spawn eggs, еды и выбрасывания предметов требует следующего прохода.
+- Rate limits и проверки протокола не являются полноценным anti-cheat для публичных серверов.
+- Только Windows zip в готовом релизе, потому что в `lib/` лежат Windows LWJGL natives.
+
 ## v0.2 Snapshot 8
 
 Snapshot 8 добавляет первый dedicated server MVP и несколько заметных multiplayer-улучшений поверх Snapshot 7. Это prerelease, а не stable-релиз.

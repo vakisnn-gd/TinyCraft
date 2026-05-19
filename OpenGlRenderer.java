@@ -446,18 +446,19 @@ final class OpenGlRenderer {
             : (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD ? GameConfig.createWorldActions()
             : (menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER ? GameConfig.multiplayerActions()
             : (menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN ? GameConfig.lanActions()
+            : (menuScreen == GameConfig.MENU_SCREEN_DISCONNECTED ? GameConfig.disconnectedActions()
             : (menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD ? GameConfig.renameWorldActions()
-            : GameConfig.worldMenuActions()))));
+            : GameConfig.worldMenuActions())))));
         float actionWidth = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER ? 118.0f * uiScale
-            : (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN ? 240.0f * uiScale : 280.0f * uiScale);
+            : (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN || menuScreen == GameConfig.MENU_SCREEN_DISCONNECTED ? 240.0f * uiScale : 280.0f * uiScale);
         float actionHeight = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER ? 38.0f * uiScale : 46.0f * uiScale;
         float gap = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER ? 10.0f * uiScale : 12.0f * uiScale;
-        boolean horizontal = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER || menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN;
+        boolean horizontal = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER || menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN || menuScreen == GameConfig.MENU_SCREEN_DISCONNECTED;
         float actionsX = horizontal
             ? framebufferWidth * 0.5f - (actionWidth * actions.length + gap * (actions.length - 1)) * 0.5f
             : framebufferWidth * 0.5f - actionWidth * 0.5f;
         float firstY = menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER ? framebufferHeight - 58.0f * uiScale
-            : (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN ? framebufferHeight - 78.0f * uiScale : framebufferHeight * 0.5f - 18.0f * uiScale);
+            : (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD || menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD || menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER || menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN || menuScreen == GameConfig.MENU_SCREEN_DISCONNECTED ? framebufferHeight - 78.0f * uiScale : framebufferHeight * 0.5f - 18.0f * uiScale);
         for (int i = 0; i < actions.length; i++) {
             float boxX = horizontal ? actionsX + i * (actionWidth + gap) : actionsX;
             float boxY = horizontal ? firstY : firstY + i * 58.0f * uiScale;
@@ -743,13 +744,14 @@ final class OpenGlRenderer {
         currentPartialTicks = clamp(partialTicks, 0.0, 1.0);
         updateFpsCounter(deltaTime);
         world.fillLoadedChunksSnapshot(loadedChunkSnapshot);
-        updateSkyColor(timeOfDay);
+        updateSkyColor(player, timeOfDay);
         glViewport(0, 0, framebufferWidth, framebufferHeight);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glDisable(GL_CULL_FACE);
 
         updateCameraEffects(sprinting, fovDegrees, deltaTime);
-        if (mainMenuActive && menuPanoramaReady) {
+        boolean hasLoadedWorldPanorama = loadedWorldName != null && !loadedWorldName.trim().isEmpty();
+        if (mainMenuActive && menuPanoramaReady && !hasLoadedWorldPanorama) {
             setupProjection();
             setupMenuPanoramaSkyboxCamera(deltaTime);
             renderMenuPanoramaSkybox();
@@ -757,7 +759,7 @@ final class OpenGlRenderer {
             logOpenGlError("render menu panorama");
             return;
         }
-        boolean menuPanorama = mainMenuActive && loadedWorldName != null && !loadedWorldName.trim().isEmpty();
+        boolean menuPanorama = mainMenuActive && hasLoadedWorldPanorama;
         setupProjection();
         if (menuPanorama) {
             setupMenuPanoramaCamera(player, deltaTime);
@@ -769,7 +771,7 @@ final class OpenGlRenderer {
             ensureChunkMeshesAroundPlayer(player.x, player.y, player.z, getChunkRenderRadius(player));
         }
         renderAtmosphere(player, timeOfDay, deltaTime);
-        configureFog(timeOfDay, renderDistanceChunks);
+        configureFog(player, timeOfDay, renderDistanceChunks);
         renderChunks(player, false);
         if (!menuPanorama) {
             renderFallingBlocks(player);
@@ -886,7 +888,7 @@ final class OpenGlRenderer {
         }
     }
 
-    private void updateSkyColor(double timeOfDay) {
+    private void updateSkyColor(PlayerState player, double timeOfDay) {
         double sun = Math.sin(timeOfDay * Math.PI * 2.0 - Math.PI * 0.5);
         float daylight = clampColor((float) ((sun + 0.18) / 1.18));
         daylight = Math.max(0.10f, daylight);
@@ -895,6 +897,12 @@ final class OpenGlRenderer {
         float skyRed = clampColor(0.03f + daylight * 0.47f + duskGlow * 0.18f);
         float skyGreen = clampColor(0.05f + daylight * 0.63f + duskGlow * 0.06f);
         float skyBlue = clampColor(0.12f + daylight * 0.80f);
+        if (player != null && world.isParadiseArea(player.x, player.z)) {
+            daylight = 1.0f;
+            skyRed = 0.78f;
+            skyGreen = 0.90f;
+            skyBlue = 1.0f;
+        }
 
         currentDaylight = daylight;
         currentSceneBrightness = (0.55f + currentDaylight * 0.45f) * Settings.brightnessMultiplier();
@@ -1302,12 +1310,17 @@ final class OpenGlRenderer {
         return Math.max(Math.hypot(horizontalDistance, GameConfig.WORLD_HEIGHT * 0.5) + CAMERA_FAR_PADDING, GameConfig.WORLD_HEIGHT * 1.45);
     }
 
-    private void configureFog(double timeOfDay, int renderDistanceChunks) {
+    private void configureFog(PlayerState player, double timeOfDay, int renderDistanceChunks) {
         float daylight = currentDaylight;
         float night = 1.0f - daylight;
         float red = clampColor(0.05f + daylight * 0.50f + night * 0.03f);
         float green = clampColor(0.07f + daylight * 0.64f + night * 0.04f);
         float blue = clampColor(0.11f + daylight * 0.82f + night * 0.10f);
+        if (player != null && world.isParadiseArea(player.x, player.z)) {
+            red = 0.70f;
+            green = 0.86f;
+            blue = 0.96f;
+        }
         fogColorScratch.clear();
         fogColorScratch.put(red).put(green).put(blue).put(1.0f).flip();
 
@@ -1495,6 +1508,10 @@ final class OpenGlRenderer {
                     }
                     if (block == GameConfig.RED_BED) {
                         emitBedBlock(targetBuilder, localX, localY, localZ, x, y, z, blockState);
+                        continue;
+                    }
+                    if (block == GameConfig.PARADISE_PORTAL) {
+                        emitParadisePortalBlock(targetBuilder, localX, localY, localZ, x, y, z);
                         continue;
                     }
                     if (world.isStairBlock(block)) {
@@ -1898,6 +1915,18 @@ final class OpenGlRenderer {
         appendCuboid(builder, cx - 0.105, y + 0.58, cz - 0.105, cx + 0.105, y + 0.82, cz + 0.105, flame);
     }
 
+    private void emitParadisePortalBlock(IntVertexBuilder builder, int x, int y, int z, int worldX, int worldY, int worldZ) {
+        float shade = Settings.goodGraphics() ? world.getAmbientShade(worldX, worldY, worldZ) : 1.0f;
+        int color = colorForFace(GameConfig.PARADISE_PORTAL, Face.NORTH, shade, worldX, worldY, worldZ);
+        double inset = (1.0 - GameConfig.PARADISE_PORTAL_RENDER_THICKNESS) * 0.5;
+        double minX = x + inset;
+        double maxX = x + 1.0 - inset;
+        double minZ = z + inset;
+        double maxZ = z + 1.0 - inset;
+        appendQuad(builder, minX, y, z + 0.5, minX, y + 1.0, z + 0.5, maxX, y + 1.0, z + 0.5, maxX, y, z + 0.5, color);
+        appendQuad(builder, x + 0.5, y, minZ, x + 0.5, y + 1.0, minZ, x + 0.5, y + 1.0, maxZ, x + 0.5, y, maxZ, color);
+    }
+
     private void appendQuad(IntVertexBuilder builder,
                             double x1, double y1, double z1,
                             double x2, double y2, double z2,
@@ -2175,6 +2204,9 @@ final class OpenGlRenderer {
             alpha = 0.60f;
         } else if (GameConfig.isLavaBlock(block)) {
             alpha = 0.85f;
+        } else if (block == GameConfig.PARADISE_PORTAL) {
+            alpha = 0.62f;
+            brightness = Math.max(1.08f, brightness);
         }
         return packColor(red * brightness, green * brightness, blue * brightness, alpha);
     }
@@ -2263,6 +2295,8 @@ final class OpenGlRenderer {
                 return face == Face.NORTH ? packColor(0.40f, 0.40f, 0.38f, 1.0f) : packColor(0.33f, 0.33f, 0.32f, 1.0f);
             case GameConfig.GLASS:
                 return packColor(0.72f, 0.90f, 0.95f, 1.0f);
+            case GameConfig.PARADISE_PORTAL:
+                return packColor(0.56f, 0.88f, 1.00f, 1.0f);
             case GameConfig.WHEAT_CROP:
                 return packColor(0.86f, 0.72f, 0.26f, 1.0f);
             case GameConfig.CARROT_CROP:
@@ -3837,6 +3871,9 @@ final class OpenGlRenderer {
         glLoadIdentity();
 
         glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_TEXTURE_2D);
 
         boolean minimalHud = player.spectatorMode;
         boolean blockingOverlay = paused || inventoryOpen || deathScreenActive || mainMenuActive;
@@ -4395,6 +4432,8 @@ final class OpenGlRenderer {
             renderMultiplayerMenu(mainMenuSelection, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, activeMenuTextField);
         } else if (menuScreen == GameConfig.MENU_SCREEN_OPEN_LAN) {
             renderOpenLanMenu(mainMenuSelection, lanGameMode, lanAllowCheats);
+        } else if (menuScreen == GameConfig.MENU_SCREEN_DISCONNECTED) {
+            renderDisconnectedMenu(mainMenuSelection, multiplayerStatus);
         } else if (menuScreen == GameConfig.MENU_SCREEN_OPTIONS) {
             renderOptionsMenu(mainMenuSelection, renderDistanceChunks, fovDegrees);
         } else {
@@ -4580,6 +4619,17 @@ final class OpenGlRenderer {
         drawMenuButton(startX, 170.0f * uiScale, buttonWidth, buttonHeight, modeLabel, false, true, uiScale * 0.62f);
         drawMenuButton(startX + buttonWidth + gap, 170.0f * uiScale, buttonWidth, buttonHeight, cheatsLabel, false, true, uiScale * 0.62f);
         drawBottomButtons(GameConfig.lanActions(), mainMenuSelection, 240.0f * uiScale, 46.0f * uiScale, uiScale);
+    }
+
+    private void renderDisconnectedMenu(int mainMenuSelection, String reason) {
+        float uiScale = Math.max(1.0f, getUiScale());
+        drawCenteredShadowText(120.0f * uiScale, uiScale * 1.1f,
+            Settings.isRussian() ? "\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u043e" : "Disconnected",
+            0.98f, 0.86f, 0.76f);
+        String message = reason == null || reason.trim().isEmpty() ? "Connection Lost" : reason.trim();
+        float textScale = message.length() > 80 ? uiScale * 0.54f : uiScale * 0.66f;
+        drawCenteredShadowText(190.0f * uiScale, textScale, message, 0.92f, 0.94f, 0.96f);
+        drawBottomButtons(GameConfig.disconnectedActions(), mainMenuSelection, 240.0f * uiScale, 46.0f * uiScale, uiScale);
     }
 
     private void drawTextField(float x, float y, float width, float height, String text, boolean active) {

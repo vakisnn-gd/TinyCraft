@@ -45,6 +45,9 @@ final class WaterRenderer {
         boolean neighborLiquid = world.isLiquidBlock(neighbor);
         boolean neighborSolid = world.isSolidBlock(neighbor);
 
+        if (!world.isBlockLoaded(neighborX, neighborY, neighborZ)) {
+            return false;
+        }
         if (liquid && (face == Face.WEST || face == Face.EAST || face == Face.NORTH || face == Face.SOUTH)
             && !world.isBlockLoaded(neighborX, neighborY, neighborZ)) {
             return false;

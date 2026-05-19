@@ -1,3 +1,6 @@
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 
 final class InventoryItems {
@@ -126,6 +129,7 @@ final class InventoryItems {
         GameConfig.CRAFTING_TABLE,
         GameConfig.FURNACE,
         GameConfig.GLASS,
+        GameConfig.PARADISE_PORTAL,
         GameConfig.RED_BED,
         GameConfig.WHEAT_CROP,
         GameConfig.RAIL,
@@ -243,6 +247,7 @@ final class InventoryItems {
                 GameConfig.CRAFTING_TABLE,
                 GameConfig.FURNACE,
                 GameConfig.GLASS,
+                GameConfig.PARADISE_PORTAL,
                 GameConfig.RED_BED,
                 GameConfig.RAIL,
                 GameConfig.OAK_DOOR,
@@ -1534,6 +1539,34 @@ final class ContainerInventory {
     ItemStack getStack(int index) {
         return slots[index];
     }
+
+    void writeTo(DataOutputStream output) throws IOException {
+        output.writeInt(slots.length);
+        for (ItemStack stack : slots) {
+            InventoryCodecs.writeStack(output, stack);
+        }
+    }
+
+    static ContainerInventory readFrom(DataInputStream input, int maxSlots) throws IOException {
+        int size = input.readInt();
+        if (size < 0 || size > maxSlots) {
+            throw new IOException("invalid container size: " + size);
+        }
+        ContainerInventory container = new ContainerInventory(size);
+        for (ItemStack stack : container.slots) {
+            InventoryCodecs.readStack(input, stack);
+        }
+        return container;
+    }
+
+    void copyFrom(ContainerInventory source) {
+        if (source == null || source.slots.length != slots.length) {
+            return;
+        }
+        for (int i = 0; i < slots.length; i++) {
+            slots[i].copyFrom(source.slots[i]);
+        }
+    }
 }
 
 final class FurnaceBlockEntity {
@@ -1592,6 +1625,39 @@ final class FurnaceBlockEntity {
         }
         return output.itemId == recipe.output
             && output.count + recipe.outputCount <= InventoryItems.maxStackSize(recipe.output);
+    }
+
+    void writeTo(DataOutputStream outputStream) throws IOException {
+        InventoryCodecs.writeStack(outputStream, input);
+        InventoryCodecs.writeStack(outputStream, fuel);
+        InventoryCodecs.writeStack(outputStream, output);
+        outputStream.writeDouble(burnRemaining);
+        outputStream.writeDouble(burnTotal);
+        outputStream.writeDouble(cookProgress);
+        outputStream.writeDouble(cookTotal);
+    }
+
+    void readFrom(DataInputStream inputStream) throws IOException {
+        InventoryCodecs.readStack(inputStream, input);
+        InventoryCodecs.readStack(inputStream, fuel);
+        InventoryCodecs.readStack(inputStream, output);
+        burnRemaining = inputStream.readDouble();
+        burnTotal = inputStream.readDouble();
+        cookProgress = inputStream.readDouble();
+        cookTotal = inputStream.readDouble();
+    }
+
+    void copyFrom(FurnaceBlockEntity source) {
+        if (source == null) {
+            return;
+        }
+        input.copyFrom(source.input);
+        fuel.copyFrom(source.fuel);
+        output.copyFrom(source.output);
+        burnRemaining = source.burnRemaining;
+        burnTotal = source.burnTotal;
+        cookProgress = source.cookProgress;
+        cookTotal = source.cookTotal;
     }
 }
 
@@ -1743,6 +1809,47 @@ final class PlayerInventory {
         clearSlots(workbenchGrid);
         offhand.clear();
         cursor.clear();
+        craftResult.clear();
+        workbenchResult.clear();
+        markCraftDirty();
+        markWorkbenchCraftDirty();
+    }
+
+    void writeTo(DataOutputStream output) throws IOException {
+        writeSlots(output, hotbar);
+        writeSlots(output, storage);
+        writeSlots(output, armor);
+        writeSlots(output, craftGrid);
+        writeSlots(output, workbenchGrid);
+        InventoryCodecs.writeStack(output, offhand);
+        InventoryCodecs.writeStack(output, cursor);
+    }
+
+    void readFrom(DataInputStream input) throws IOException {
+        readSlots(input, hotbar, HOTBAR_SIZE);
+        readSlots(input, storage, STORAGE_SIZE);
+        readSlots(input, armor, ARMOR_SIZE);
+        readSlots(input, craftGrid, CRAFT_SIZE);
+        readSlots(input, workbenchGrid, WORKBENCH_CRAFT_SIZE);
+        InventoryCodecs.readStack(input, offhand);
+        InventoryCodecs.readStack(input, cursor);
+        craftResult.clear();
+        workbenchResult.clear();
+        markCraftDirty();
+        markWorkbenchCraftDirty();
+    }
+
+    void copyFrom(PlayerInventory source) {
+        if (source == null) {
+            return;
+        }
+        copySlots(hotbar, source.hotbar);
+        copySlots(storage, source.storage);
+        copySlots(armor, source.armor);
+        copySlots(craftGrid, source.craftGrid);
+        copySlots(workbenchGrid, source.workbenchGrid);
+        offhand.copyFrom(source.offhand);
+        cursor.copyFrom(source.cursor);
         craftResult.clear();
         workbenchResult.clear();
         markCraftDirty();
@@ -2342,6 +2449,63 @@ final class PlayerInventory {
     private void clearSlots(ItemStack[] slots) {
         for (ItemStack slot : slots) {
             slot.clear();
+        }
+    }
+
+    private void writeSlots(DataOutputStream output, ItemStack[] slots) throws IOException {
+        output.writeInt(slots.length);
+        for (ItemStack stack : slots) {
+            InventoryCodecs.writeStack(output, stack);
+        }
+    }
+
+    private void readSlots(DataInputStream input, ItemStack[] slots, int expectedSize) throws IOException {
+        int size = input.readInt();
+        if (size != expectedSize) {
+            throw new IOException("invalid inventory section size: " + size);
+        }
+        for (ItemStack stack : slots) {
+            InventoryCodecs.readStack(input, stack);
+        }
+    }
+
+    private void copySlots(ItemStack[] target, ItemStack[] source) {
+        for (int i = 0; i < target.length && i < source.length; i++) {
+            target[i].copyFrom(source[i]);
+        }
+    }
+}
+
+final class InventoryCodecs {
+    private InventoryCodecs() {
+    }
+
+    static void writeStack(DataOutputStream output, ItemStack stack) throws IOException {
+        if (stack == null || stack.isEmpty()) {
+            output.writeByte(GameConfig.AIR);
+            output.writeInt(0);
+            output.writeInt(0);
+            return;
+        }
+        output.writeByte(stack.itemId);
+        output.writeInt(stack.count);
+        output.writeInt(stack.durabilityDamage);
+    }
+
+    static void readStack(DataInputStream input, ItemStack stack) throws IOException {
+        byte itemId = input.readByte();
+        int count = input.readInt();
+        int durabilityDamage = input.readInt();
+        if (itemId == GameConfig.AIR || count <= 0) {
+            stack.clear();
+            return;
+        }
+        int maxStack = InventoryItems.maxStackSize(itemId);
+        stack.set(itemId, Math.max(1, Math.min(count, maxStack)));
+        if (InventoryItems.isDurableItem(itemId)) {
+            stack.durabilityDamage = Math.max(0, Math.min(durabilityDamage, InventoryItems.maxDurability(itemId) - 1));
+        } else {
+            stack.durabilityDamage = 0;
         }
     }
 }

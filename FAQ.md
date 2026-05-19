@@ -2,25 +2,25 @@
 
 ## Что это за проект?
 
-TinyCraft / TinyMinecraft - маленькая Java/LWJGL voxel-песочница в стиле Minecraft. В проекте есть чанковый мир, биомы, пещеры, шахты, деревни, мобы, инвентарь, крафт, сундуки, печки, команды, LAN-мультиплеер и первый dedicated server.
+TinyCraft - маленькая Java/LWJGL voxel-песочница. В проекте есть чанковый мир, биомы, пещеры, шахты, деревни, мобы, инвентарь, крафт, сундуки, печки, команды, LAN-мультиплеер и dedicated server.
 
 ## Какая версия сейчас актуальная?
 
-Актуальный prerelease разработки - `v0.2 Snapshot 8`.
+Актуальный prerelease разработки - `v0.2 Snapshot 9`.
 
-Последний stable-релиз на GitHub может отображаться отдельно. Snapshot 8 публикуется как prerelease, потому что multiplayer и dedicated server еще имеют честные ограничения.
+Последний stable-релиз на GitHub может отображаться отдельно. Snapshot 9 публикуется как prerelease, потому что multiplayer и dedicated server еще имеют честные ограничения.
 
 ## Где скачать игру?
 
 Откройте страницу релизов:
 
-[https://github.com/vakisnn-gd/TinyMinecraft/releases](https://github.com/vakisnn-gd/TinyMinecraft/releases)
+[https://github.com/vakisnn-gd/TinyCraft/releases](https://github.com/vakisnn-gd/TinyCraft/releases)
 
-Для Snapshot 8 используйте релиз:
+Для Snapshot 9 используйте релиз:
 
-- `v0.2 Snapshot 8`
-- tag: `v0.2-snapshot8`
-- asset: `TinyMinecraft-v0.2-snapshot8-windows.zip`
+- `v0.2 Snapshot 9`
+- tag: `v0.2-snapshot9`
+- asset: `TinyCraft-Snapshot9-windows.zip`
 
 Скачивайте именно `.zip` из assets. `Source code` - это архив исходников от GitHub, он больше подходит для разработки.
 
@@ -64,7 +64,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 ## Поддерживается ли мультиплеер?
 
-Да. Snapshot 8 поддерживает Direct IP / LAN и dedicated server MVP.
+Да. Snapshot 9 поддерживает Direct IP / LAN, dedicated server и первый server-authority проход для инвентаря/контейнеров.
 
 Работает:
 
@@ -72,8 +72,9 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 - подключение в локальной сети по IP;
 - подключение к dedicated server при открытом TCP-порту;
 - синхронизация чанков, блоков, игроков, мобов, дропа, времени и чата;
+- server-side MVP для инвентаря, сундуков, печек и верстака;
 - Tab player list с ping и здоровьем;
-- команды `/list`, `/ping`, `/msg`, `/kick`;
+- команды `/list`, `/ping`, `/msg`, `/kick`, `/give`, `/clear`, `/gamemode`, `/tp`;
 - базовый PvP и server-side mob attack.
 
 Пока не готово:
@@ -82,7 +83,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 - relay/NAT traversal;
 - внешние аккаунты;
 - полноценный anti-cheat;
-- полная server-side модель контейнеров и всего инвентаря;
+- полная server-side модель особых предметных действий вроде buckets, spawn eggs, еды и выбрасывания предметов;
 - никнеймы над игроками.
 
 ## Как подключиться к серверу?
@@ -112,13 +113,17 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 /ping
 /msg <player> <message>
 /kick <player> [reason]
+/give <id|tinycraft:name> <amount>
+/clear <player>
+/gamemode <survival|creative|spectator> <player>
+/tp <player> <x> <y> <z>
 ```
 
-`/kick` доступен host-стороне. На dedicated server игроки получают обратную связь через чат, а console admin может использовать `kick <player> [reason]`.
+На dedicated server права команд ограничиваются operator/console-стороной. Игроки получают обратную связь через чат.
 
 ## Почему релиз только Windows?
 
-В репозитории сейчас лежат LWJGL natives только для Windows. Linux/macOS packaging можно добавить позже, но Snapshot 8 целится в Windows zip.
+В репозитории сейчас лежат LWJGL natives только для Windows. Linux/macOS packaging можно добавить позже, но Snapshot 9 целится в Windows zip.
 
 ## Можно ли менять код?
 

@@ -151,6 +151,7 @@ final class BlockRegistry {
         register(GameConfig.DEEPSLATE_COAL_ORE, "minecraft:deepslate_coal_ore", "Deepslate Coal Ore", true, true, false, false, false, false, 0);
         register(GameConfig.RED_BED, "minecraft:red_bed", "Red Bed", true, false, false, false, false, false, 0);
         register(GameConfig.OAK_FENCE_GATE, "minecraft:oak_fence_gate", "Oak Fence Gate", true, false, false, false, false, false, 0);
+        register(GameConfig.PARADISE_PORTAL, "tiny:paradise_portal", "Paradise Portal", false, false, false, false, false, false, 12);
     }
 
     private BlockRegistry() {

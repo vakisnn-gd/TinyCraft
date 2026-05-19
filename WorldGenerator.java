@@ -51,23 +51,32 @@ final class WorldGenerator {
 
     private final long seed;
     private final TerrainPreset terrainPreset;
+    private final int dimensionId;
     private final TerrainProfile terrain;
     private final int[] permutation = new int[512];
     private final DensitySampler densitySampler = new DensitySampler();
     private final ConcurrentHashMap<Long, VillagePlan> villagePlanCache = new ConcurrentHashMap<>();
 
     WorldGenerator(long seed) {
-        this(seed, TerrainPreset.LEGACY);
+        this(seed, TerrainPreset.LEGACY, GameConfig.DIMENSION_OVERWORLD);
     }
 
     WorldGenerator(long seed, TerrainPreset terrainPreset) {
+        this(seed, terrainPreset, GameConfig.DIMENSION_OVERWORLD);
+    }
+
+    WorldGenerator(long seed, TerrainPreset terrainPreset, int dimensionId) {
         this.seed = seed;
         this.terrainPreset = terrainPreset == null ? TerrainPreset.LEGACY : terrainPreset;
+        this.dimensionId = dimensionId;
         this.terrain = TerrainProfile.forPreset(this.terrainPreset);
         initializePermutation();
     }
 
     GeneratedChunkColumn generateChunk(int chunkX, int chunkZ) {
+        if (isParadiseChunk(chunkX, chunkZ)) {
+            return generateParadiseChunk(chunkX, chunkZ);
+        }
         GeneratedChunkColumn column = new GeneratedChunkColumn(chunkX, chunkZ);
         int startX = chunkX * GameConfig.CHUNK_SIZE;
         int startZ = chunkZ * GameConfig.CHUNK_SIZE;
@@ -784,6 +793,168 @@ final class WorldGenerator {
             && Math.floorDiv(worldZ, GameConfig.CHUNK_SIZE) == column.chunkZ;
     }
 
+    private boolean isParadiseChunk(int chunkX, int chunkZ) {
+        if (!GameConfig.isParadiseDimension(dimensionId)) {
+            return false;
+        }
+        int minX = chunkX * GameConfig.CHUNK_SIZE;
+        int minZ = chunkZ * GameConfig.CHUNK_SIZE;
+        int maxX = minX + GameConfig.CHUNK_SIZE - 1;
+        int maxZ = minZ + GameConfig.CHUNK_SIZE - 1;
+        return maxX >= GameConfig.PARADISE_ORIGIN_X - GameConfig.PARADISE_RADIUS_BLOCKS
+            && minX <= GameConfig.PARADISE_ORIGIN_X + GameConfig.PARADISE_RADIUS_BLOCKS
+            && maxZ >= GameConfig.PARADISE_ORIGIN_Z - GameConfig.PARADISE_RADIUS_BLOCKS
+            && minZ <= GameConfig.PARADISE_ORIGIN_Z + GameConfig.PARADISE_RADIUS_BLOCKS;
+    }
+
+    private GeneratedChunkColumn generateParadiseChunk(int chunkX, int chunkZ) {
+        GeneratedChunkColumn column = new GeneratedChunkColumn(chunkX, chunkZ);
+        int startX = chunkX * GameConfig.CHUNK_SIZE;
+        int startZ = chunkZ * GameConfig.CHUNK_SIZE;
+        for (int localX = 0; localX < GameConfig.CHUNK_SIZE; localX++) {
+            for (int localZ = 0; localZ < GameConfig.CHUNK_SIZE; localZ++) {
+                int worldX = startX + localX;
+                int worldZ = startZ + localZ;
+                int surfaceY = paradiseSurfaceHeight(worldX, worldZ);
+                column.setSurfaceHeight(localX, localZ, surfaceY);
+                if (surfaceY <= GameConfig.WORLD_MIN_Y) {
+                    continue;
+                }
+                int thickness = paradiseIslandThickness(worldX, worldZ, surfaceY);
+                int bottomY = Math.max(GameConfig.WORLD_MIN_Y + 4, surfaceY - thickness);
+                for (int y = bottomY; y <= surfaceY; y++) {
+                    byte block = y == surfaceY
+                        ? GameConfig.GRASS
+                        : y >= surfaceY - 3 ? GameConfig.DIRT : (y < surfaceY - thickness + 2 ? GameConfig.DEEPSLATE : GameConfig.STONE);
+                    column.setBlock(worldX, y, worldZ, block);
+                }
+            }
+        }
+        populateParadiseFeatures(column, startX, startZ);
+        placeParadiseReturnPortal(column);
+        column.setStatus(ChunkGenerationStatus.FULL);
+        return column;
+    }
+
+    private int paradiseSurfaceHeight(int worldX, int worldZ) {
+        double dx = worldX - GameConfig.PARADISE_ORIGIN_X;
+        double dz = worldZ - GameConfig.PARADISE_ORIGIN_Z;
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        double edgeNoise = fractalNoise((worldX + 17.0) * 0.045, (worldZ - 31.0) * 0.045, 3, 0.55) * 3.0;
+        if (distance <= 36.0 + edgeNoise) {
+            if (distance <= 10.0) {
+                return GameConfig.PARADISE_SURFACE_Y;
+            }
+            double heightNoise = fractalNoise((worldX - 240.0) * 0.060, (worldZ + 180.0) * 0.060, 2, 0.54);
+            return GameConfig.PARADISE_SURFACE_Y + (int) Math.round(heightNoise * 3.0 - Math.max(0.0, distance - 24.0) * 0.10);
+        }
+
+        int best = GameConfig.WORLD_MIN_Y;
+        int cellX = Math.floorDiv(worldX - GameConfig.PARADISE_ORIGIN_X, 56);
+        int cellZ = Math.floorDiv(worldZ - GameConfig.PARADISE_ORIGIN_Z, 56);
+        for (int oz = -1; oz <= 1; oz++) {
+            for (int ox = -1; ox <= 1; ox++) {
+                int islandCellX = cellX + ox;
+                int islandCellZ = cellZ + oz;
+                long islandSeed = mix64(seed ^ 0x51A7E11L ^ ((long) islandCellX * 73428767L) ^ ((long) islandCellZ * 912931L));
+                if (randomUnit(islandSeed) > 0.58) {
+                    continue;
+                }
+                int centerX = GameConfig.PARADISE_ORIGIN_X + islandCellX * 56 + (int) Math.round((randomUnit(islandSeed ^ 0x31L) - 0.5) * 20.0);
+                int centerZ = GameConfig.PARADISE_ORIGIN_Z + islandCellZ * 56 + (int) Math.round((randomUnit(islandSeed ^ 0x57L) - 0.5) * 20.0);
+                double centerDistance = Math.hypot(centerX - GameConfig.PARADISE_ORIGIN_X, centerZ - GameConfig.PARADISE_ORIGIN_Z);
+                if (centerDistance > GameConfig.PARADISE_RADIUS_BLOCKS - 28.0) {
+                    continue;
+                }
+                double radius = 10.0 + randomUnit(islandSeed ^ 0x71L) * 12.0;
+                double islandDistance = Math.hypot(worldX - centerX, worldZ - centerZ);
+                if (islandDistance > radius) {
+                    continue;
+                }
+                double heightNoise = fractalNoise((worldX + islandCellX * 11.0) * 0.070, (worldZ - islandCellZ * 13.0) * 0.070, 2, 0.52);
+                int height = GameConfig.PARADISE_SURFACE_Y + 10 + (int) Math.round(randomUnit(islandSeed ^ 0x99L) * 18.0 + heightNoise * 3.0);
+                best = Math.max(best, height);
+            }
+        }
+        return best;
+    }
+
+    private int paradiseIslandThickness(int worldX, int worldZ, int surfaceY) {
+        double dx = worldX - GameConfig.PARADISE_ORIGIN_X;
+        double dz = worldZ - GameConfig.PARADISE_ORIGIN_Z;
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        if (distance <= 40.0) {
+            return 7 + (int) Math.max(0.0, (36.0 - distance) * 0.28);
+        }
+        double noise = climate01(fractalNoise((worldX + surfaceY) * 0.09, (worldZ - surfaceY) * 0.09, 2, 0.55));
+        return 5 + (int) Math.round(noise * 4.0);
+    }
+
+    private void populateParadiseFeatures(GeneratedChunkColumn column, int startX, int startZ) {
+        for (int localX = 0; localX < GameConfig.CHUNK_SIZE; localX++) {
+            for (int localZ = 0; localZ < GameConfig.CHUNK_SIZE; localZ++) {
+                int worldX = startX + localX;
+                int worldZ = startZ + localZ;
+                int surfaceY = column.getSurfaceHeight(localX, localZ);
+                if (surfaceY <= GameConfig.WORLD_MIN_Y || surfaceY + 6 >= GameConfig.WORLD_MAX_Y) {
+                    continue;
+                }
+                if (Math.abs(worldX - GameConfig.PARADISE_ORIGIN_X) <= 5
+                    && Math.abs(worldZ - GameConfig.PARADISE_ORIGIN_Z) <= 8) {
+                    continue;
+                }
+                long featureSeed = mix64(seed ^ 0x9ADE5EEDL ^ (((long) worldX) << 32) ^ (worldZ & 0xFFFFFFFFL));
+                double roll = randomUnit(featureSeed);
+                if (roll < 0.028) {
+                    placeParadiseTree(column, worldX, surfaceY + 1, worldZ, featureSeed);
+                } else if (roll < 0.22 && column.getBlock(worldX, surfaceY + 1, worldZ) == GameConfig.AIR) {
+                    column.setBlock(worldX, surfaceY + 1, worldZ,
+                        ((featureSeed >>> 8) & 1L) == 0L ? GameConfig.YELLOW_FLOWER : GameConfig.RED_FLOWER);
+                } else if (roll < 0.44 && column.getBlock(worldX, surfaceY + 1, worldZ) == GameConfig.AIR) {
+                    column.setBlock(worldX, surfaceY + 1, worldZ, GameConfig.TALL_GRASS);
+                }
+            }
+        }
+    }
+
+    private void placeParadiseTree(GeneratedChunkColumn column, int x, int y, int z, long featureSeed) {
+        int height = 4 + (int) Math.round(randomUnit(featureSeed ^ 0xC0DEL) * 2.0);
+        for (int dy = 0; dy < height; dy++) {
+            column.setBlock(x, y + dy, z, GameConfig.BIRCH_LOG);
+        }
+        int leafBase = y + height - 2;
+        for (int dy = 0; dy <= 3; dy++) {
+            int radius = dy == 3 ? 1 : 2;
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (Math.abs(dx) + Math.abs(dz) > radius + 1) {
+                        continue;
+                    }
+                    if (dx == 0 && dz == 0 && dy < 2) {
+                        continue;
+                    }
+                    column.setBlock(x + dx, leafBase + dy, z + dz, GameConfig.BIRCH_LEAVES);
+                }
+            }
+        }
+    }
+
+    private void placeParadiseReturnPortal(GeneratedChunkColumn column) {
+        int originX = GameConfig.PARADISE_ORIGIN_X - 1;
+        int originY = GameConfig.PARADISE_SURFACE_Y + 1;
+        int originZ = GameConfig.PARADISE_ORIGIN_Z + 2;
+        for (int width = 0; width < 4; width++) {
+            column.setBlock(originX + width, originY, originZ, GameConfig.GLASS);
+            column.setBlock(originX + width, originY + 4, originZ, GameConfig.GLASS);
+        }
+        for (int height = 1; height <= 3; height++) {
+            column.setBlock(originX, originY + height, originZ, GameConfig.GLASS);
+            column.setBlock(originX + 3, originY + height, originZ, GameConfig.GLASS);
+            column.setBlock(originX + 1, originY + height, originZ, GameConfig.PARADISE_PORTAL);
+            column.setBlock(originX + 2, originY + height, originZ, GameConfig.PARADISE_PORTAL);
+        }
+    }
+
     private void setStructureBlock(GeneratedChunkColumn column, int worldX, int worldY, int worldZ, byte block) {
         if (Math.floorDiv(worldX, GameConfig.CHUNK_SIZE) != column.chunkX
             || Math.floorDiv(worldZ, GameConfig.CHUNK_SIZE) != column.chunkZ) {
@@ -793,6 +964,12 @@ final class WorldGenerator {
     }
 
     int estimateSurfaceHeight(int worldX, int worldZ) {
+        if (GameConfig.isParadiseArea(worldX, worldZ)) {
+            int paradiseHeight = paradiseSurfaceHeight(worldX, worldZ);
+            if (paradiseHeight > GameConfig.WORLD_MIN_Y) {
+                return paradiseHeight;
+            }
+        }
         return sampleSurfaceHeight(worldX, worldZ, sampleBiome(worldX, worldZ));
     }
 

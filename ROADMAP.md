@@ -1,28 +1,37 @@
 # План разработки
 
-Главное правило: сначала стабилизация, потом большие новые функции. Snapshot 8 закрепляет dedicated server MVP и делает мультиплеер заметнее для игрока, но не обещает публичную серверную инфраструктуру.
+Главное правило: сначала стабилизация, потом большие новые функции. Snapshot 9 закрепляет server authority MVP для dedicated server, inventory и контейнеров, но не обещает публичную серверную инфраструктуру.
 
-## Цель v0.2 Snapshot 8
+## Цель v0.2 Snapshot 9
 
 - Держать проект компилируемым на Java 8+.
 - Держать singleplayer запускаемым.
 - Дать игрокам Direct IP/LAN и dedicated server MVP.
 - Переиспользовать server world между запусками.
 - Показывать player list, ping и базовую диагностику соединения.
-- Синхронизировать основные gameplay-события: chunks, blocks, chat, players, mobs, drops, health, pickup.
+- Синхронизировать основные gameplay-события: chunks, blocks, chat, players, mobs, drops, health, pickup, inventory и containers.
+- Валидировать базовые multiplayer-действия: размеры пакетов, частоту действий, дистанцию `BLOCK_ACTION`, совместимость протокола.
 - Честно не добавлять внешние аккаунты, relay, NAT traversal и публичную инфраструктуру.
+
+## Сделано в Snapshot 9
+
+- `MultiplayerProtocol.VERSION = 4`; клиенты Snapshot 8 отклоняются как несовместимые.
+- Добавлены `INVENTORY_SYNC` и `CONTAINER_*` пакеты.
+- Сундуки, печки и верстак открываются и меняются через server-side window id.
+- Клиентский mirror больше не применяет ломание/установку блоков до server `BLOCK_UPDATE`.
+- Добавлены JUnit headless tests и `run-tests.bat`.
 
 ## Следующий проход стабилизации
 
 1. Server authority
-   - Перенести больше inventory/container-действий на сервер.
-   - Разделить локальные UI-действия и авторитетные игровые действия.
-   - Уточнить поведение `/give`, `/clear`, `/gamemode` и cheats в multiplayer.
+   - Расширить server-side модель на выбрасывание предметов из инвентаря, spawn eggs, buckets и еду.
+   - Уточнить permission model для `/give`, `/clear`, `/gamemode`, `/tp` и `allowCheats`.
+   - Добавить более подробные server rejection messages в отдельный UI/status слой.
 
 2. Containers
-   - Спроектировать server-side модель сундуков, печек и workbench.
-   - Добавить пакеты открытия, закрытия и изменения контейнеров.
-   - Запретить клиенту напрямую менять авторитетное содержимое контейнеров.
+   - Протестировать несколько клиентов, одновременно открывающих один сундук/печь.
+   - Добавить server-side drop cursor при disconnect/death.
+   - Полировать быстрые перемещения и визуальную обратную связь при отклоненном клике.
 
 3. Connection UX
    - Добавить историю последних серверов.
@@ -31,9 +40,9 @@
    - Добавить reconnect после временного разрыва.
 
 4. Protocol hardening
-   - Валидировать координаты и частоту `BLOCK_ACTION`.
-   - Ограничить размер и частоту пакетов.
-   - Проверять допустимую дистанцию действия с блоком.
+   - Расширить headless tests на real `MultiplayerManager` loopback-сценарии.
+   - Валидировать больше gameplay-пакетов против server inventory/state.
+   - Добавить опциональные debug logs для packet rejection.
    - Не считать это полноценным anti-cheat для публичных серверов.
 
 5. Observability

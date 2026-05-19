@@ -282,7 +282,7 @@ final class ChatSystem {
 
     private void executeGive(String[] parts, CommandTarget target) {
         if (parts.length != 3) {
-            addMessage("Usage: /give <id|minecraft:name> <amount>");
+            addMessage("Usage: /give <id|tinycraft:name> <amount>");
             return;
         }
         try {
@@ -304,7 +304,7 @@ final class ChatSystem {
                 addMessage("Cannot give item " + parts[1] + ".");
             }
         } catch (NumberFormatException exception) {
-            addMessage("Usage: /give <id|minecraft:name> <amount>");
+            addMessage("Usage: /give <id|tinycraft:name> <amount>");
         }
     }
 
@@ -325,10 +325,7 @@ final class ChatSystem {
         if (block != null) {
             return block;
         }
-        if (query.indexOf(':') < 0) {
-            return resolveBlockName("minecraft:" + query);
-        }
-        return null;
+        return resolveBlockName(toInternalBlockId(query));
     }
 
     private Byte resolveNumericGiveItem(String query) {
@@ -367,7 +364,15 @@ final class ChatSystem {
     }
 
     private Byte resolveNamedInventoryItem(String query) {
-        switch (query.startsWith("minecraft:") ? query.substring("minecraft:".length()) : query) {
+        switch (stripTinyCraftNamespace(query)) {
+            case "stick":
+                return InventoryItems.STICK;
+            case "coal":
+                return InventoryItems.COAL_ITEM;
+            case "iron_ingot":
+                return InventoryItems.IRON_INGOT;
+            case "diamond":
+                return InventoryItems.DIAMOND_ITEM;
             case "wheat_seeds":
             case "seeds":
                 return InventoryItems.WHEAT_SEEDS;
@@ -394,6 +399,18 @@ final class ChatSystem {
             default:
                 return null;
         }
+    }
+
+    private String toInternalBlockId(String query) {
+        String localName = stripTinyCraftNamespace(query);
+        if (localName.startsWith("minecraft:")) {
+            return localName;
+        }
+        return "minecraft:" + localName;
+    }
+
+    private String stripTinyCraftNamespace(String query) {
+        return query != null && query.startsWith("tinycraft:") ? query.substring("tinycraft:".length()) : query;
     }
 
     private void executeSpawnZombie(String[] parts, CommandTarget target) {

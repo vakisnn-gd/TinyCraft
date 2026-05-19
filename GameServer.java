@@ -49,7 +49,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             tickThread = new Thread(this::runTickLoop, "TinyCraft dedicated tick");
             tickThread.setDaemon(false);
             tickThread.start();
-            System.out.println("TinyCraft Snapshot 8 dedicated server");
+            System.out.println("TinyCraft Snapshot 9 dedicated server");
             System.out.println("World: " + resolved.directory);
             System.out.println("Seed: " + Long.toUnsignedString(resolved.seed, 16));
             System.out.println("MOTD: " + properties.motd);
@@ -132,15 +132,27 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         }
         String[] parts = line.split("\\s+", 4);
         String command = parts[0].toLowerCase(Locale.ROOT);
+        if ("gm".equals(command)) {
+            line = "gamemode" + (line.length() > 2 ? line.substring(2) : "");
+            parts = line.split("\\s+", 4);
+            command = "gamemode";
+        } else if ("gms".equals(command) || "gmc".equals(command) || "gmsp".equals(command)) {
+            String mode = "gmc".equals(command) ? "creative" : ("gmsp".equals(command) ? "spectator" : "survival");
+            String target = parts.length >= 2 ? " " + parts[1] : "";
+            line = "gamemode " + mode + target;
+            parts = line.split("\\s+", 4);
+            command = "gamemode";
+        }
         if (!isDedicatedServerCommand(command)) {
             return null;
         }
-        if (senderUuid != null && !accessList.isOperator(senderUuid, senderName)) {
+        if (senderUuid != null && !accessList.isOperator(senderUuid, senderName)
+            && (!properties.allowCheats || !isPlayerCheatCommand(command))) {
             return "You do not have permission to use /" + command + ".";
         }
         try {
             if ("help".equals(command)) {
-                return "Commands: help, status, list, say <message>, kick <player> [reason], save, save-all, stop, op, deop, whitelist, ban, pardon, tp, gamemode";
+                return "Commands: help, status, list, say <message>, kick <player> [reason], save, save-all, stop, op, deop, whitelist, ban, pardon, tp, gamemode, give, clear";
             }
             if ("status".equals(command)) {
                 long uptimeSeconds = Math.max(0L, (System.currentTimeMillis() - startMillis) / 1000L);
@@ -218,32 +230,75 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
                 return handleWhitelistCommand(parts);
             }
             if ("tp".equals(command)) {
+                boolean selfTarget = senderUuid != null && parts.length == 4;
                 if (parts.length < 4) {
-                    return "Usage: tp <player> <x> <y> <z>";
+                    return senderUuid == null ? "Usage: tp <player> <x> <y> <z>" : "Usage: /tp <x> <y> <z>";
                 }
-                double x = Double.parseDouble(parts[2]);
+                String targetName = selfTarget ? senderName : parts[1];
+                int xIndex = selfTarget ? 1 : 2;
+                double x = Double.parseDouble(parts[xIndex]);
+                if (selfTarget) {
+                    double y = Double.parseDouble(parts[2]);
+                    double z = Double.parseDouble(parts[3]);
+                    return multiplayer.teleportPlayerByName(targetName, x, y, z)
+                        ? "Teleported " + targetName + "."
+                        : "Player not found: " + targetName;
+                }
                 String[] tail = parts[3].split("\\s+");
                 if (tail.length < 2) {
                     return "Usage: tp <player> <x> <y> <z>";
                 }
                 double y = Double.parseDouble(tail[0]);
                 double z = Double.parseDouble(tail[1]);
-                return multiplayer.teleportPlayerByName(parts[1], x, y, z)
-                    ? "Teleported " + parts[1] + "."
-                    : "Player not found: " + parts[1];
+                return multiplayer.teleportPlayerByName(targetName, x, y, z)
+                    ? "Teleported " + targetName + "."
+                    : "Player not found: " + targetName;
             }
             if ("gamemode".equals(command)) {
-                if (parts.length < 3) {
-                    return "Usage: gamemode <survival|creative|spectator> <player>";
+                boolean selfTarget = senderUuid != null && parts.length == 2;
+                if (parts.length < 3 && !selfTarget) {
+                    return senderUuid == null
+                        ? "Usage: gamemode <survival|creative|spectator> <player>"
+                        : "Usage: /gamemode <survival|creative|spectator>";
                 }
                 String mode = parts[1].toLowerCase(Locale.ROOT);
                 if (!"survival".equals(mode) && !"creative".equals(mode) && !"spectator".equals(mode)
                     && !"0".equals(mode) && !"1".equals(mode) && !"3".equals(mode)) {
                     return "Unknown gamemode: " + parts[1];
                 }
-                return multiplayer.setPlayerGameModeByName(parts[2], mode)
-                    ? "Set " + parts[2] + " to " + mode + "."
-                    : "Player not found: " + parts[2];
+                String targetName = selfTarget ? senderName : parts[2];
+                return multiplayer.setPlayerGameModeByName(targetName, mode)
+                    ? "Set " + targetName + " to " + mode + "."
+                    : "Player not found: " + targetName;
+            }
+            if ("clear".equals(command)) {
+                boolean selfTarget = senderUuid != null && parts.length == 1;
+                if (parts.length < 2 && !selfTarget) {
+                    return senderUuid == null ? "Usage: clear <player>" : "Usage: /clear";
+                }
+                String targetName = selfTarget ? senderName : parts[1];
+                return multiplayer.clearPlayerInventoryByName(targetName)
+                    ? "Cleared " + targetName + "."
+                    : "Player not found: " + targetName;
+            }
+            if ("give".equals(command)) {
+                boolean selfTarget = senderUuid != null && parts.length == 3;
+                if (parts.length < 4 && !selfTarget) {
+                    return senderUuid == null
+                        ? "Usage: give <player> <id|tinycraft:name> <amount>"
+                        : "Usage: /give <id|tinycraft:name> <amount>";
+                }
+                String targetName = selfTarget ? senderName : parts[1];
+                String itemToken = selfTarget ? parts[1] : parts[2];
+                String amountToken = selfTarget ? parts[2] : parts[3];
+                Byte itemId = resolveGiveItem(itemToken);
+                int amount = Integer.parseInt(amountToken);
+                if (itemId == null || amount <= 0) {
+                    return "Cannot give item " + itemToken + ".";
+                }
+                return multiplayer.givePlayerItemByName(targetName, itemId, amount)
+                    ? "Gave " + amount + " item(s) to " + targetName + "."
+                    : "Player not found or inventory full: " + targetName;
             }
             return null;
         } catch (IOException exception) {
@@ -301,7 +356,49 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             || "ban".equals(command)
             || "pardon".equals(command)
             || "tp".equals(command)
-            || "gamemode".equals(command);
+            || "gamemode".equals(command)
+            || "give".equals(command)
+            || "clear".equals(command);
+    }
+
+    private boolean isPlayerCheatCommand(String command) {
+        return "tp".equals(command)
+            || "gamemode".equals(command)
+            || "give".equals(command)
+            || "clear".equals(command);
+    }
+
+    private Byte resolveGiveItem(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        String query = raw.trim().toLowerCase(Locale.ROOT);
+        try {
+            int value = Integer.parseInt(query);
+            if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+                return (byte) value;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        String localName = query.startsWith("tinycraft:") ? query.substring("tinycraft:".length()) : query;
+        String namespaced = localName.startsWith("minecraft:") ? localName : "minecraft:" + localName;
+        BlockType block = BlockRegistry.typeByName(namespaced);
+        if (block != null && InventoryItems.isCollectible((byte) block.numericId)) {
+            return (byte) block.numericId;
+        }
+        if ("stick".equals(localName)) {
+            return InventoryItems.STICK;
+        }
+        if ("coal".equals(localName)) {
+            return InventoryItems.COAL_ITEM;
+        }
+        if ("iron_ingot".equals(localName)) {
+            return InventoryItems.IRON_INGOT;
+        }
+        if ("diamond".equals(localName)) {
+            return InventoryItems.DIAMOND_ITEM;
+        }
+        return null;
     }
 
     private ResolvedPlayer resolvePlayer(String token) {
@@ -334,7 +431,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
     }
 
     @Override
-    public void onClientWelcome(long seed, TerrainPreset terrainPreset, double x, double y, double z, double worldTime) {
+    public void onClientWelcome(long seed, TerrainPreset terrainPreset, int dimensionId, double x, double y, double z, double worldTime) {
     }
 
     @Override
@@ -358,7 +455,23 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
     }
 
     @Override
-    public void onClientServerPlayerState(double x, double y, double z, double yaw, double pitch, boolean creativeMode, boolean spectatorMode, double health) {
+    public void onClientServerPlayerState(int dimensionId, double x, double y, double z, double yaw, double pitch, boolean creativeMode, boolean spectatorMode, double health) {
+    }
+
+    @Override
+    public void onClientInventorySync(PlayerInventory authoritativeInventory) {
+    }
+
+    @Override
+    public void onClientContainerOpen(int screenMode, int x, int y, int z, int windowId, ContainerInventory chest, FurnaceBlockEntity furnace) {
+    }
+
+    @Override
+    public void onClientContainerUpdate(int screenMode, int x, int y, int z, int windowId, ContainerInventory chest, FurnaceBlockEntity furnace) {
+    }
+
+    @Override
+    public void onClientContainerClose(int windowId) {
     }
 
     private void runTickLoop() {

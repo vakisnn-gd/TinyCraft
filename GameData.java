@@ -30,7 +30,11 @@ final class GameConfig {
     static final String SAVE_LEVEL_FILE = "level.json";
     static final String SAVE_CHUNKS_DIRECTORY = "chunks";
     static final String SAVE_REGION_DIRECTORY = "region";
+    static final String SAVE_DIMENSIONS_DIRECTORY = "dimensions";
+    static final String PARADISE_DIMENSION_DIRECTORY = "paradise";
     static final String SAVE_PLAYER_FILE = "player.dat";
+    static final int DIMENSION_OVERWORLD = 0;
+    static final int DIMENSION_PARADISE = 1;
     static final int REGION_SIZE_CHUNKS = 32;
     static final int REGION_CHUNK_COUNT = REGION_SIZE_CHUNKS * REGION_SIZE_CHUNKS;
     static final String REGION_FILE_EXTENSION = ".mcrx";
@@ -103,6 +107,15 @@ final class GameConfig {
     static final byte KELP = (byte) 129;
     static final byte CARROT_CROP = (byte) 130;
     static final byte POTATO_CROP = (byte) 131;
+    static final byte PARADISE_PORTAL = (byte) 138;
+
+    static final int PARADISE_ORIGIN_X = 0;
+    static final int PARADISE_ORIGIN_Z = 0;
+    static final int PARADISE_SURFACE_Y = 128;
+    static final int PARADISE_RADIUS_BLOCKS = 224;
+    static final double PARADISE_PORTAL_SECONDS = 0.75;
+    static final double PARADISE_PORTAL_COOLDOWN_SECONDS = 2.0;
+    static final double PARADISE_PORTAL_RENDER_THICKNESS = 0.125;
 
     static final double PLAYER_RADIUS = 0.30;
     static final double PLAYER_HEIGHT = 1.80;
@@ -216,6 +229,7 @@ final class GameConfig {
     static final int MENU_SCREEN_RENAME_WORLD = 4;
     static final int MENU_SCREEN_MULTIPLAYER = 5;
     static final int MENU_SCREEN_OPEN_LAN = 6;
+    static final int MENU_SCREEN_DISCONNECTED = 7;
     static final int INVENTORY_SCREEN_PLAYER = 0;
     static final int INVENTORY_SCREEN_WORKBENCH = 1;
     static final int INVENTORY_SCREEN_CHEST = 2;
@@ -238,6 +252,8 @@ final class GameConfig {
     static final String[] SINGLEPLAYER_ACTIONS_EN = {"Play", "Create New", "Rename", "Delete", "Back"};
     static final String[] MULTIPLAYER_ACTIONS_EN = {"Open World", "Connect", "Back"};
     static final String[] LAN_ACTIONS_EN = {"Start LAN World", "Cancel"};
+    static final String[] DISCONNECTED_ACTIONS = {"Back"};
+    static final String[] DISCONNECTED_ACTIONS_EN = {"Back"};
     static final String[] CREATE_WORLD_ACTIONS_EN = {"Create New World", "Cancel"};
     static final String[] RENAME_WORLD_ACTIONS_EN = {"Rename", "Cancel"};
     static final String[] CREATIVE_TABS_EN = {"Blocks", "Nature", "Tools", "Fluids"};
@@ -362,6 +378,15 @@ final class GameConfig {
         return (blockOrItem == WATER || isWaterBlock(blockOrItem)) ? WATER_SPREAD_DISTANCE : LAVA_SPREAD_DISTANCE;
     }
 
+    static boolean isParadiseArea(double x, double z) {
+        return Math.abs(x - PARADISE_ORIGIN_X) <= PARADISE_RADIUS_BLOCKS
+            && Math.abs(z - PARADISE_ORIGIN_Z) <= PARADISE_RADIUS_BLOCKS;
+    }
+
+    static boolean isParadiseDimension(int dimensionId) {
+        return dimensionId == DIMENSION_PARADISE;
+    }
+
     static String[] pauseOptions() {
         return Settings.isRussian() ? PAUSE_OPTIONS : PAUSE_OPTIONS_EN;
     }
@@ -384,6 +409,10 @@ final class GameConfig {
 
     static String[] lanActions() {
         return Settings.isRussian() ? LAN_ACTIONS : LAN_ACTIONS_EN;
+    }
+
+    static String[] disconnectedActions() {
+        return Settings.isRussian() ? DISCONNECTED_ACTIONS : DISCONNECTED_ACTIONS_EN;
     }
 
     static String[] createWorldActions() {
@@ -741,6 +770,14 @@ final class PlayerState extends Entity {
     double spawnX;
     double spawnY;
     double spawnZ;
+    boolean hasParadiseReturn;
+    double paradiseReturnX;
+    double paradiseReturnY;
+    double paradiseReturnZ;
+    int paradiseReturnDimensionId;
+    double paradisePortalTimer;
+    double paradisePortalCooldown;
+    int dimensionId;
 
     PlayerState() {
         super(0.5, GameConfig.SURFACE_Y + 1.0, 0.5, GameConfig.MAX_HEALTH);

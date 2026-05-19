@@ -1,12 +1,14 @@
 import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 final class BackgroundSaveService {
     private static final long POISON = Long.MIN_VALUE;
 
     private final ConcurrentHashMap<Long, SaveJob> pendingJobs = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<Long> readyKeys = new LinkedBlockingQueue<>();
+    private final AtomicInteger activeJobs = new AtomicInteger();
     private final Thread worker;
     private volatile boolean running = true;
 
@@ -28,7 +30,7 @@ final class BackgroundSaveService {
     }
 
     void flush() {
-        while (!pendingJobs.isEmpty()) {
+        while (!pendingJobs.isEmpty() || activeJobs.get() > 0) {
             try {
                 Thread.sleep(2L);
             } catch (InterruptedException exception) {
@@ -56,11 +58,17 @@ final class BackgroundSaveService {
                 if (key == POISON) {
                     continue;
                 }
-                SaveJob job = pendingJobs.remove(key);
+                SaveJob job = pendingJobs.get(key);
                 if (job == null) {
                     continue;
                 }
-                job.storage.saveColumn(job.column);
+                activeJobs.incrementAndGet();
+                try {
+                    pendingJobs.remove(key, job);
+                    job.storage.saveColumn(job.column);
+                } finally {
+                    activeJobs.decrementAndGet();
+                }
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;
