@@ -282,30 +282,135 @@ final class ChatSystem {
 
     private void executeGive(String[] parts, CommandTarget target) {
         if (parts.length != 3) {
-            addMessage("Usage: /give <block_id> <amount>");
+            addMessage("Usage: /give <id|tinycraft:name> <amount>");
             return;
         }
         try {
-            int rawItemId = Integer.parseInt(parts[1]);
             int amount = Integer.parseInt(parts[2]);
-            if (rawItemId < Byte.MIN_VALUE || rawItemId > Byte.MAX_VALUE) {
-                addMessage("Block id is out of range.");
-                return;
-            }
             if (amount <= 0 || amount > 4096) {
                 addMessage("Amount must be between 1 and 4096.");
                 return;
             }
 
-            byte itemId = (byte) rawItemId;
+            Byte resolved = resolveGiveItem(parts[1]);
+            if (resolved == null) {
+                addMessage("Unknown item or block '" + parts[1] + "'.");
+                return;
+            }
+            byte itemId = resolved.byteValue();
             if (target.giveItem(itemId, amount)) {
-                addMessage("Gave item " + rawItemId + " x" + amount + ".");
+                addMessage("Gave " + InventoryItems.name(itemId) + " x" + amount + ".");
             } else {
-                addMessage("Cannot give item " + rawItemId + ".");
+                addMessage("Cannot give item " + parts[1] + ".");
             }
         } catch (NumberFormatException exception) {
-            addMessage("Usage: /give <block_id> <amount>");
+            addMessage("Usage: /give <id|tinycraft:name> <amount>");
         }
+    }
+
+    private Byte resolveGiveItem(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        String query = raw.trim().toLowerCase(Locale.ROOT);
+        Byte numeric = resolveNumericGiveItem(query);
+        if (numeric != null) {
+            return numeric;
+        }
+        Byte namedItem = resolveNamedInventoryItem(query);
+        if (namedItem != null) {
+            return namedItem;
+        }
+        Byte block = resolveBlockName(query);
+        if (block != null) {
+            return block;
+        }
+        return resolveBlockName(toInternalBlockId(query));
+    }
+
+    private Byte resolveNumericGiveItem(String query) {
+        try {
+            int rawId = Integer.parseInt(query);
+            if (rawId >= 0 && rawId <= 255) {
+                byte item = (byte) rawId;
+                return isHiddenGiveItem(item) ? null : item;
+            }
+            if (rawId >= Byte.MIN_VALUE && rawId <= Byte.MAX_VALUE) {
+                byte item = (byte) rawId;
+                return isHiddenGiveItem(item) ? null : item;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return null;
+    }
+
+    private boolean isHiddenGiveItem(byte item) {
+        return item == GameConfig.CARROT_CROP || item == GameConfig.POTATO_CROP;
+    }
+
+    private Byte resolveBlockName(String namespacedId) {
+        BlockState state = Blocks.stateFromNamespacedId(namespacedId);
+        if (state == null || state.type == null) {
+            return null;
+        }
+        if (state.type.numericId == (GameConfig.AIR & 0xFF) && !"minecraft:air".equals(namespacedId)) {
+            return null;
+        }
+        if (state.type.numericId == (GameConfig.CARROT_CROP & 0xFF)
+            || state.type.numericId == (GameConfig.POTATO_CROP & 0xFF)) {
+            return null;
+        }
+        return Blocks.legacyIdFromState(state);
+    }
+
+    private Byte resolveNamedInventoryItem(String query) {
+        switch (stripTinyCraftNamespace(query)) {
+            case "stick":
+                return InventoryItems.STICK;
+            case "coal":
+                return InventoryItems.COAL_ITEM;
+            case "iron_ingot":
+                return InventoryItems.IRON_INGOT;
+            case "diamond":
+                return InventoryItems.DIAMOND_ITEM;
+            case "wheat_seeds":
+            case "seeds":
+                return InventoryItems.WHEAT_SEEDS;
+            case "carrot":
+            case "carrots":
+                return InventoryItems.CARROT;
+            case "potato":
+            case "potatoes":
+                return InventoryItems.POTATO;
+            case "raw_herring":
+            case "herring":
+                return InventoryItems.RAW_HERRING;
+            case "raw_salmon":
+            case "salmon":
+                return InventoryItems.RAW_SALMON;
+            case "cooked_herring":
+                return InventoryItems.COOKED_HERRING;
+            case "cooked_salmon":
+                return InventoryItems.COOKED_SALMON;
+            case "herring_spawn_egg":
+                return InventoryItems.HERRING_SPAWN_EGG;
+            case "salmon_spawn_egg":
+                return InventoryItems.SALMON_SPAWN_EGG;
+            default:
+                return null;
+        }
+    }
+
+    private String toInternalBlockId(String query) {
+        String localName = stripTinyCraftNamespace(query);
+        if (localName.startsWith("minecraft:")) {
+            return localName;
+        }
+        return "minecraft:" + localName;
+    }
+
+    private String stripTinyCraftNamespace(String query) {
+        return query != null && query.startsWith("tinycraft:") ? query.substring("tinycraft:".length()) : query;
     }
 
     private void executeSpawnZombie(String[] parts, CommandTarget target) {

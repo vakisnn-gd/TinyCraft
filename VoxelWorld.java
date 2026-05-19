@@ -35,9 +35,14 @@ final class VoxelWorld implements StructureTemplates.Target {
     private static final double PASSIVE_BABY_GROW_SECONDS = 600.0;
     private static final int PLAYER_INVENTORY_SAVE_MAGIC = 0x544D5049;
     private static final int PLAYER_INVENTORY_SAVE_VERSION = 1;
+    private static final int NETWORK_PLAYER_INVENTORY_SAVE_MAGIC = 0x544D4E49;
+    private static final int NETWORK_PLAYER_INVENTORY_SAVE_VERSION = 1;
+    private static final int PARADISE_PLAYER_STATE_MAGIC = 0x54435052;
+    private static final int PARADISE_PLAYER_STATE_VERSION = 2;
     private static final double ZOMBIE_GROWL_DISTANCE_SQUARED = 11.0 * 11.0;
     private static final double COLLISION_EPSILON = 1.0e-7;
     private static final int HOSTILE_MOB_TARGET_COUNT = 18;
+    private static final int FISH_MOB_TARGET_COUNT = 64;
     private static final int MAX_ASYNC_COLUMN_SUBMISSIONS_PER_TICK = Math.max(192, GameConfig.CHUNK_GENERATION_THREADS * 48);
     private static final int MAX_INITIAL_COLUMN_SUBMISSIONS = Math.max(768, GameConfig.CHUNK_GENERATION_THREADS * 192);
     private static final int MAX_PENDING_COLUMN_TASKS = Math.max(8192, GameConfig.CHUNK_GENERATION_THREADS * 1024);
@@ -47,7 +52,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     private static final int MAX_LAVA_CELLS_PER_WORLD_TICK = 32;
     private static final int MAX_SAND_CELLS_PER_WORLD_TICK = 96;
     private static final int MAX_MOB_AI_UPDATES_PER_FRAME = 32;
-    private static final int SPAWN_LAND_SEARCH_RADIUS = 4096;
+    private static final int SPAWN_LAND_SEARCH_RADIUS = 64;
     private static final int SPAWN_LAND_SEARCH_STEP = 16;
 
     static final class ChunkColumn {
@@ -122,11 +127,40 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
     }
 
+    private static final class DimensionRuntimeState {
+        final ConcurrentHashMap<Long, ChunkColumn> loadedColumns = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Long, Future<ChunkColumn>> pendingColumns = new ConcurrentHashMap<>();
+        final ArrayList<MobEntity> mobs = new ArrayList<>();
+        final HashSet<Long> populatedVillageCells = new HashSet<>();
+        final ArrayList<DroppedItem> droppedItems = new ArrayList<>();
+        final ArrayList<FallingBlock> fallingBlocks = new ArrayList<>();
+        final HashMap<Long, ContainerInventory> chestContainers = new HashMap<>();
+        final HashMap<Long, FurnaceBlockEntity> furnaces = new HashMap<>();
+        final HashSet<Long> activeWaterCells = new HashSet<>();
+        final HashSet<Long> activeLavaCells = new HashSet<>();
+        final HashSet<Long> activeSandCells = new HashSet<>();
+        final HashSet<Long> queuedWaterCells = new HashSet<>();
+        final HashSet<Long> queuedLavaCells = new HashSet<>();
+        final HashSet<Long> queuedSandCells = new HashSet<>();
+        final ArrayDeque<Long> activeWaterQueue = new ArrayDeque<>();
+        final ArrayDeque<Long> activeLavaQueue = new ArrayDeque<>();
+        final ArrayDeque<Long> activeSandQueue = new ArrayDeque<>();
+        final HashMap<Long, Double> leafDecayTimers = new HashMap<>();
+        final HashSet<Long> fallingBlockSources = new HashSet<>();
+        final HashSet<Long> dirtyChunkSections = new HashSet<>();
+        final HashSet<Long> pendingMeshDirtySections = new HashSet<>();
+        final HashMap<Long, CachedFluidFlow> waterFlowCache = new HashMap<>();
+        int streamingWarmupFrames;
+        int lastStreamingChunkX = Integer.MIN_VALUE;
+        int lastStreamingChunkZ = Integer.MIN_VALUE;
+    }
+
     private long seed;
     private TerrainPreset terrainPreset = TerrainPreset.LEGACY;
     private Path worldDirectory;
     private Path saveDirectory;
     private RegionStorage regionStorage;
+    private RegionStorage paradiseRegionStorage;
     private final ConcurrentHashMap<Long, ChunkColumn> loadedColumns = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Future<ChunkColumn>> pendingColumns = new ConcurrentHashMap<>();
     private final ThreadPoolExecutor generationExecutor = createGenerationExecutor();
@@ -162,9 +196,12 @@ final class VoxelWorld implements StructureTemplates.Target {
     private final HashMap<Long, CachedFluidFlow> waterFlowCache = new HashMap<>();
     private Random worldRandom;
     private WorldGenerator worldGenerator;
+    private final HashMap<Integer, DimensionRuntimeState> dimensionRuntimeStates = new HashMap<>();
     private boolean networkMirrorMode;
+    private int activeDimensionId = GameConfig.DIMENSION_OVERWORLD;
     private double simulationAccumulator;
     private double hostileMobSpawnCooldown;
+    private double fishSpawnCooldown;
     private double worldTime = 0.30;
     private long worldTickCounter;
     private int renderDistanceChunks = GameConfig.CHUNK_RENDER_DISTANCE;
@@ -257,8 +294,10 @@ final class VoxelWorld implements StructureTemplates.Target {
         this.worldDirectory = worldDirectory;
         this.saveDirectory = worldDirectory.resolve(GameConfig.SAVE_CHUNKS_DIRECTORY);
         this.regionStorage = new RegionStorage(worldDirectory);
+        this.paradiseRegionStorage = new RegionStorage(paradiseDimensionDirectory(worldDirectory));
         this.worldRandom = new Random(seed ^ 0x7A21AF13D54E3B21L);
-        this.worldGenerator = new WorldGenerator(seed, this.terrainPreset);
+        this.activeDimensionId = GameConfig.DIMENSION_OVERWORLD;
+        this.worldGenerator = new WorldGenerator(seed, this.terrainPreset, activeDimensionId);
         this.worldTime = 0.30;
         this.streamingWarmupFrames = 0;
         this.lastStreamingChunkX = Integer.MIN_VALUE;
@@ -269,6 +308,8 @@ final class VoxelWorld implements StructureTemplates.Target {
         leafDecayTimers.clear();
         loadContainers();
         loadMobs();
+        dimensionRuntimeStates.clear();
+        saveActiveDimensionRuntime();
     }
 
     void setNetworkMirrorMode(boolean networkMirrorMode) {
@@ -380,14 +421,15 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     boolean isChunkLoaded(int chunkX, int chunkZ) {
-        return loadedColumns.containsKey(columnKey(chunkX, chunkZ));
+        ChunkColumn column = loadedColumns.get(columnKey(chunkX, chunkZ));
+        return column != null && column.generated && column.status == ChunkGenerationStatus.FULL;
     }
 
     boolean isBlockLoaded(int x, int y, int z) {
         if (!GameConfig.isWorldCoordinateInside(x, y, z)) {
             return false;
         }
-        return loadedColumns.containsKey(columnKey(worldToChunk(x), worldToChunk(z)));
+        return isChunkLoaded(worldToChunk(x), worldToChunk(z));
     }
 
     void fillLoadedChunksSnapshot(List<Chunk> chunks) {
@@ -396,6 +438,9 @@ final class VoxelWorld implements StructureTemplates.Target {
             ((ArrayList<Chunk>) chunks).ensureCapacity(loadedColumns.size() * GameConfig.SECTION_COUNT);
         }
         for (ChunkColumn column : loadedColumns.values()) {
+            if (column == null || !column.generated || column.status != ChunkGenerationStatus.FULL) {
+                continue;
+            }
             for (Chunk chunk : column.sections) {
                 chunks.add(chunk);
             }
@@ -419,7 +464,150 @@ final class VoxelWorld implements StructureTemplates.Target {
         for (int i = 0; i < permutation.length; i++) {
             permutation[i] = values[i & 255];
         }
-        worldGenerator = new WorldGenerator(seed, terrainPreset);
+        worldGenerator = new WorldGenerator(seed, terrainPreset, activeDimensionId);
+    }
+
+    int activeDimensionId() {
+        return activeDimensionId;
+    }
+
+    private int normalizeDimensionId(int dimensionId) {
+        return GameConfig.isParadiseDimension(dimensionId)
+            ? GameConfig.DIMENSION_PARADISE
+            : GameConfig.DIMENSION_OVERWORLD;
+    }
+
+    private DimensionRuntimeState runtimeStateFor(int dimensionId) {
+        int normalized = normalizeDimensionId(dimensionId);
+        DimensionRuntimeState state = dimensionRuntimeStates.get(normalized);
+        if (state == null) {
+            state = new DimensionRuntimeState();
+            dimensionRuntimeStates.put(normalized, state);
+        }
+        return state;
+    }
+
+    private void saveActiveDimensionRuntime() {
+        DimensionRuntimeState state = runtimeStateFor(activeDimensionId);
+        state.loadedColumns.clear();
+        state.loadedColumns.putAll(loadedColumns);
+        state.pendingColumns.clear();
+        state.pendingColumns.putAll(pendingColumns);
+        state.mobs.clear();
+        state.mobs.addAll(mobs);
+        state.populatedVillageCells.clear();
+        state.populatedVillageCells.addAll(populatedVillageCells);
+        state.droppedItems.clear();
+        state.droppedItems.addAll(droppedItems);
+        state.fallingBlocks.clear();
+        state.fallingBlocks.addAll(fallingBlocks);
+        state.chestContainers.clear();
+        state.chestContainers.putAll(chestContainers);
+        state.furnaces.clear();
+        state.furnaces.putAll(furnaces);
+        state.activeWaterCells.clear();
+        state.activeWaterCells.addAll(activeWaterCells);
+        state.activeLavaCells.clear();
+        state.activeLavaCells.addAll(activeLavaCells);
+        state.activeSandCells.clear();
+        state.activeSandCells.addAll(activeSandCells);
+        state.queuedWaterCells.clear();
+        state.queuedWaterCells.addAll(queuedWaterCells);
+        state.queuedLavaCells.clear();
+        state.queuedLavaCells.addAll(queuedLavaCells);
+        state.queuedSandCells.clear();
+        state.queuedSandCells.addAll(queuedSandCells);
+        state.activeWaterQueue.clear();
+        state.activeWaterQueue.addAll(activeWaterQueue);
+        state.activeLavaQueue.clear();
+        state.activeLavaQueue.addAll(activeLavaQueue);
+        state.activeSandQueue.clear();
+        state.activeSandQueue.addAll(activeSandQueue);
+        state.leafDecayTimers.clear();
+        state.leafDecayTimers.putAll(leafDecayTimers);
+        state.fallingBlockSources.clear();
+        state.fallingBlockSources.addAll(fallingBlockSources);
+        state.dirtyChunkSections.clear();
+        state.dirtyChunkSections.addAll(dirtyChunkSections);
+        state.pendingMeshDirtySections.clear();
+        state.pendingMeshDirtySections.addAll(pendingMeshDirtySections);
+        state.waterFlowCache.clear();
+        state.waterFlowCache.putAll(waterFlowCache);
+        state.streamingWarmupFrames = streamingWarmupFrames;
+        state.lastStreamingChunkX = lastStreamingChunkX;
+        state.lastStreamingChunkZ = lastStreamingChunkZ;
+    }
+
+    private void restoreActiveDimensionRuntime(int dimensionId) {
+        DimensionRuntimeState state = runtimeStateFor(dimensionId);
+        loadedColumns.clear();
+        loadedColumns.putAll(state.loadedColumns);
+        pendingColumns.clear();
+        pendingColumns.putAll(state.pendingColumns);
+        mobs.clear();
+        mobs.addAll(state.mobs);
+        populatedVillageCells.clear();
+        populatedVillageCells.addAll(state.populatedVillageCells);
+        droppedItems.clear();
+        droppedItems.addAll(state.droppedItems);
+        fallingBlocks.clear();
+        fallingBlocks.addAll(state.fallingBlocks);
+        chestContainers.clear();
+        chestContainers.putAll(state.chestContainers);
+        furnaces.clear();
+        furnaces.putAll(state.furnaces);
+        activeWaterCells.clear();
+        activeWaterCells.addAll(state.activeWaterCells);
+        activeLavaCells.clear();
+        activeLavaCells.addAll(state.activeLavaCells);
+        activeSandCells.clear();
+        activeSandCells.addAll(state.activeSandCells);
+        queuedWaterCells.clear();
+        queuedWaterCells.addAll(state.queuedWaterCells);
+        queuedLavaCells.clear();
+        queuedLavaCells.addAll(state.queuedLavaCells);
+        queuedSandCells.clear();
+        queuedSandCells.addAll(state.queuedSandCells);
+        activeWaterQueue.clear();
+        activeWaterQueue.addAll(state.activeWaterQueue);
+        activeLavaQueue.clear();
+        activeLavaQueue.addAll(state.activeLavaQueue);
+        activeSandQueue.clear();
+        activeSandQueue.addAll(state.activeSandQueue);
+        leafDecayTimers.clear();
+        leafDecayTimers.putAll(state.leafDecayTimers);
+        fallingBlockSources.clear();
+        fallingBlockSources.addAll(state.fallingBlockSources);
+        dirtyChunkSections.clear();
+        dirtyChunkSections.addAll(state.dirtyChunkSections);
+        pendingMeshDirtySections.clear();
+        pendingMeshDirtySections.addAll(state.pendingMeshDirtySections);
+        simulationDirtyColumns.clear();
+        networkDirtyBlocks.clear();
+        waterFlowCache.clear();
+        waterFlowCache.putAll(state.waterFlowCache);
+        streamingWarmupFrames = state.streamingWarmupFrames;
+        lastStreamingChunkX = state.lastStreamingChunkX;
+        lastStreamingChunkZ = state.lastStreamingChunkZ;
+    }
+
+    void setActiveDimension(int dimensionId) {
+        int normalized = normalizeDimensionId(dimensionId);
+        if (activeDimensionId == normalized) {
+            return;
+        }
+        flushLoadedColumns();
+        backgroundSaveService.flush();
+        saveActiveDimensionRuntime();
+        activeDimensionId = normalized;
+        restoreActiveDimensionRuntime(activeDimensionId);
+        worldGenerator = new WorldGenerator(seed, terrainPreset, activeDimensionId);
+    }
+
+    void setActiveDimensionFor(PlayerState player) {
+        if (player != null) {
+            setActiveDimension(player.dimensionId);
+        }
     }
 
     void saveAllLoadedColumns() {
@@ -457,9 +645,11 @@ final class VoxelWorld implements StructureTemplates.Target {
         chestContainers.clear();
         furnaces.clear();
         remotePlayers.clear();
+        dimensionRuntimeStates.clear();
         worldDirectory = null;
         saveDirectory = null;
         regionStorage = null;
+        paradiseRegionStorage = null;
         networkMirrorMode = false;
     }
 
@@ -487,6 +677,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         chestContainers.clear();
         furnaces.clear();
         remotePlayers.clear();
+        dimensionRuntimeStates.clear();
         simulationAccumulator = 0.0;
         hostileMobSpawnCooldown = 20.0;
         worldTickCounter = 0L;
@@ -509,6 +700,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         worldDirectory = null;
         saveDirectory = null;
         regionStorage = null;
+        paradiseRegionStorage = null;
         networkMirrorMode = false;
     }
 
@@ -535,6 +727,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         fallingBlocks.clear();
         chestContainers.clear();
         furnaces.clear();
+        dimensionRuntimeStates.clear();
         simulationAccumulator = 0.0;
         hostileMobSpawnCooldown = 20.0;
         worldTickCounter = 0L;
@@ -560,6 +753,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (player == null) {
             return;
         }
+        setActiveDimensionFor(player);
         int playerChunkX = worldToChunk((int) Math.floor(player.x));
         int playerChunkZ = worldToChunk((int) Math.floor(player.z));
         if (playerChunkX != lastStreamingChunkX || playerChunkZ != lastStreamingChunkZ) {
@@ -596,6 +790,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (player == null) {
             return;
         }
+        setActiveDimensionFor(player);
         if (networkMirrorMode) {
             return;
         }
@@ -613,6 +808,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (player == null) {
             return 0;
         }
+        setActiveDimensionFor(player);
         int playerChunkX = worldToChunk((int) Math.floor(player.x));
         int playerChunkZ = worldToChunk((int) Math.floor(player.z));
         int loaded = 0;
@@ -636,6 +832,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     ColumnUpdateList updateWorldTicks(PlayerState player, double deltaTime) {
+        setActiveDimensionFor(player);
         simulationDirtyColumns.clear();
         dirtyChunkSections.clear();
         drainGeneratedColumns();
@@ -681,6 +878,8 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     void placePlayerAtSpawn(PlayerState player) {
+        player.dimensionId = GameConfig.DIMENSION_OVERWORLD;
+        setActiveDimension(player.dimensionId);
         int bestX = 0;
         int bestZ = 0;
         int bestY = Integer.MIN_VALUE;
@@ -713,11 +912,10 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
 
         if (bestY == Integer.MIN_VALUE) {
-            bestY = findExactSpawnAt(0, 0);
-            if (bestY == Integer.MIN_VALUE) {
-                ensureColumnGeneratedSync(0, 0);
-                bestY = Math.max(GameConfig.SEA_LEVEL + 2, getSurfaceHeight(0, 0) + 2);
-            }
+            bestX = 0;
+            bestZ = 0;
+            ensureColumnGeneratedSync(0, 0);
+            bestY = Math.max(GameConfig.WORLD_MIN_Y + 2, getSurfaceHeight(0, 0));
         }
 
         player.x = bestX + 0.5;
@@ -769,6 +967,112 @@ final class VoxelWorld implements StructureTemplates.Target {
             groundY = getSurfaceHeight(blockX, blockZ);
         }
         return getStandingY(x, z, groundY + 1.0);
+    }
+
+    boolean isParadiseArea(double x, double z) {
+        return GameConfig.isParadiseDimension(activeDimensionId);
+    }
+
+    Path paradiseDimensionDirectory() {
+        return worldDirectory == null ? null : paradiseDimensionDirectory(worldDirectory);
+    }
+
+    private static Path paradiseDimensionDirectory(Path rootDirectory) {
+        return rootDirectory.resolve(GameConfig.SAVE_DIMENSIONS_DIRECTORY)
+            .resolve(GameConfig.PARADISE_DIMENSION_DIRECTORY);
+    }
+
+    boolean isParadiseColumn(int chunkX, int chunkZ) {
+        if (!GameConfig.isParadiseDimension(activeDimensionId)) {
+            return false;
+        }
+        int minX = chunkX * GameConfig.CHUNK_SIZE;
+        int minZ = chunkZ * GameConfig.CHUNK_SIZE;
+        int maxX = minX + GameConfig.CHUNK_SIZE - 1;
+        int maxZ = minZ + GameConfig.CHUNK_SIZE - 1;
+        return maxX >= GameConfig.PARADISE_ORIGIN_X - GameConfig.PARADISE_RADIUS_BLOCKS
+            && minX <= GameConfig.PARADISE_ORIGIN_X + GameConfig.PARADISE_RADIUS_BLOCKS
+            && maxZ >= GameConfig.PARADISE_ORIGIN_Z - GameConfig.PARADISE_RADIUS_BLOCKS
+            && minZ <= GameConfig.PARADISE_ORIGIN_Z + GameConfig.PARADISE_RADIUS_BLOCKS;
+    }
+
+    void placePlayerAtParadiseSpawn(PlayerState player) {
+        if (player == null) {
+            return;
+        }
+        int spawnX = GameConfig.PARADISE_ORIGIN_X;
+        int spawnZ = GameConfig.PARADISE_ORIGIN_Z - 4;
+        player.dimensionId = GameConfig.DIMENSION_PARADISE;
+        setActiveDimension(player.dimensionId);
+        ensureColumnGeneratedSync(worldToChunk(spawnX), worldToChunk(spawnZ));
+        ensureColumnGeneratedSync(worldToChunk(GameConfig.PARADISE_ORIGIN_X), worldToChunk(GameConfig.PARADISE_ORIGIN_Z));
+        player.x = spawnX + 0.5;
+        player.z = spawnZ + 0.5;
+        player.y = safeStandingYAt(player.x, player.z);
+        player.verticalVelocity = 0.0;
+        player.isGrounded = true;
+    }
+
+    boolean updateParadisePortalTravel(PlayerState player, double deltaTime) {
+        if (player == null || player.spectatorMode) {
+            return false;
+        }
+        player.paradisePortalCooldown = Math.max(0.0, player.paradisePortalCooldown - Math.max(0.0, deltaTime));
+        if (player.paradisePortalCooldown > 0.0 || !isPlayerInsideParadisePortal(player)) {
+            player.paradisePortalTimer = 0.0;
+            return false;
+        }
+        player.paradisePortalTimer += Math.max(0.0, deltaTime);
+        if (player.paradisePortalTimer < GameConfig.PARADISE_PORTAL_SECONDS) {
+            return false;
+        }
+        if (GameConfig.isParadiseDimension(player.dimensionId)) {
+            teleportPlayerFromParadise(player);
+        } else {
+            teleportPlayerToParadise(player);
+        }
+        player.paradisePortalTimer = 0.0;
+        player.paradisePortalCooldown = GameConfig.PARADISE_PORTAL_COOLDOWN_SECONDS;
+        player.capturePreviousPosition();
+        return true;
+    }
+
+    private boolean isPlayerInsideParadisePortal(PlayerState player) {
+        int blockX = (int) Math.floor(player.x);
+        int blockZ = (int) Math.floor(player.z);
+        int feetY = (int) Math.floor(player.y + 0.08);
+        int headY = (int) Math.floor(player.y + player.eyeHeight());
+        return getBlock(blockX, feetY, blockZ) == GameConfig.PARADISE_PORTAL
+            || getBlock(blockX, headY, blockZ) == GameConfig.PARADISE_PORTAL;
+    }
+
+    private void teleportPlayerToParadise(PlayerState player) {
+        player.hasParadiseReturn = true;
+        player.paradiseReturnX = player.x;
+        player.paradiseReturnY = player.y;
+        player.paradiseReturnZ = player.z;
+        player.paradiseReturnDimensionId = player.dimensionId;
+        placePlayerAtParadiseSpawn(player);
+    }
+
+    private void teleportPlayerFromParadise(PlayerState player) {
+        player.dimensionId = player.paradiseReturnDimensionId;
+        if (GameConfig.isParadiseDimension(player.dimensionId)) {
+            player.dimensionId = GameConfig.DIMENSION_OVERWORLD;
+        }
+        setActiveDimension(player.dimensionId);
+        if (player.hasParadiseReturn
+            && Double.isFinite(player.paradiseReturnX)
+            && Double.isFinite(player.paradiseReturnY)
+            && Double.isFinite(player.paradiseReturnZ)
+            && isInside((int) Math.floor(player.paradiseReturnX), (int) Math.floor(player.paradiseReturnY), (int) Math.floor(player.paradiseReturnZ))) {
+            ensureColumnGeneratedSync(worldToChunk((int) Math.floor(player.paradiseReturnX)), worldToChunk((int) Math.floor(player.paradiseReturnZ)));
+            player.setPosition(player.paradiseReturnX, player.paradiseReturnY, player.paradiseReturnZ);
+        } else {
+            placePlayerAtSpawn(player);
+        }
+        player.verticalVelocity = 0.0;
+        player.isGrounded = true;
     }
 
     private int findSpawnGroundY(int x, int z) {
@@ -848,11 +1152,19 @@ final class VoxelWorld implements StructureTemplates.Target {
                 player.spawnY = input.readDouble();
                 player.spawnZ = input.readDouble();
             }
-            if (inventory != null && input.available() >= 8) {
+            while (input.available() >= 8) {
                 int magic = input.readInt();
                 int version = input.readInt();
                 if (magic == PLAYER_INVENTORY_SAVE_MAGIC && version >= 1 && version <= PLAYER_INVENTORY_SAVE_VERSION) {
-                    readPlayerInventory(input, inventory);
+                    if (inventory != null) {
+                        readPlayerInventory(input, inventory);
+                    } else {
+                        break;
+                    }
+                } else if (magic == PARADISE_PLAYER_STATE_MAGIC && version >= 1 && version <= PARADISE_PLAYER_STATE_VERSION) {
+                    readParadisePlayerState(input, player, version);
+                } else {
+                    break;
                 }
             }
             return true;
@@ -890,6 +1202,7 @@ final class VoxelWorld implements StructureTemplates.Target {
                 output.writeDouble(player.spawnX);
                 output.writeDouble(player.spawnY);
                 output.writeDouble(player.spawnZ);
+                writeParadisePlayerState(output, player);
                 if (inventory != null) {
                     output.writeInt(PLAYER_INVENTORY_SAVE_MAGIC);
                     output.writeInt(PLAYER_INVENTORY_SAVE_VERSION);
@@ -904,6 +1217,10 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     boolean loadNetworkPlayerState(UUID uuid, PlayerState player) {
+        return loadNetworkPlayerState(uuid, player, null);
+    }
+
+    boolean loadNetworkPlayerState(UUID uuid, PlayerState player, PlayerInventory inventory) {
         if (uuid == null || player == null || worldDirectory == null) {
             return false;
         }
@@ -934,6 +1251,21 @@ final class VoxelWorld implements StructureTemplates.Target {
                 player.health = clamp(input.readDouble(), 0.0, GameConfig.MAX_HEALTH);
                 player.hunger = clamp(input.readDouble(), 0.0, GameConfig.MAX_HUNGER);
             }
+            while (input.available() >= 8) {
+                int magic = input.readInt();
+                int version = input.readInt();
+                if (magic == NETWORK_PLAYER_INVENTORY_SAVE_MAGIC && version >= 1 && version <= NETWORK_PLAYER_INVENTORY_SAVE_VERSION) {
+                    if (inventory != null) {
+                        inventory.readFrom(input);
+                    } else {
+                        break;
+                    }
+                } else if (magic == PARADISE_PLAYER_STATE_MAGIC && version >= 1 && version <= PARADISE_PLAYER_STATE_VERSION) {
+                    readParadisePlayerState(input, player, version);
+                } else {
+                    break;
+                }
+            }
             return true;
         } catch (IOException exception) {
             if (GameConfig.ENABLE_DEBUG_LOGS) {
@@ -944,6 +1276,10 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     void saveNetworkPlayerState(UUID uuid, PlayerState player) {
+        saveNetworkPlayerState(uuid, player, null);
+    }
+
+    void saveNetworkPlayerState(UUID uuid, PlayerState player, PlayerInventory inventory) {
         if (uuid == null || player == null || worldDirectory == null) {
             return;
         }
@@ -960,6 +1296,12 @@ final class VoxelWorld implements StructureTemplates.Target {
                 output.writeBoolean(player.flightEnabled);
                 output.writeDouble(clamp(player.health, 0.0, GameConfig.MAX_HEALTH));
                 output.writeDouble(clamp(player.hunger, 0.0, GameConfig.MAX_HUNGER));
+                writeParadisePlayerState(output, player);
+                if (inventory != null) {
+                    output.writeInt(NETWORK_PLAYER_INVENTORY_SAVE_MAGIC);
+                    output.writeInt(NETWORK_PLAYER_INVENTORY_SAVE_VERSION);
+                    inventory.writeTo(output);
+                }
             }
         } catch (IOException exception) {
             if (GameConfig.ENABLE_DEBUG_LOGS) {
@@ -970,6 +1312,26 @@ final class VoxelWorld implements StructureTemplates.Target {
 
     private Path networkPlayerPath(UUID uuid) {
         return worldDirectory.resolve("players").resolve(uuid.toString() + ".dat");
+    }
+
+    private void writeParadisePlayerState(DataOutputStream output, PlayerState player) throws IOException {
+        output.writeInt(PARADISE_PLAYER_STATE_MAGIC);
+        output.writeInt(PARADISE_PLAYER_STATE_VERSION);
+        output.writeInt(player.dimensionId);
+        output.writeBoolean(player.hasParadiseReturn);
+        output.writeDouble(player.paradiseReturnX);
+        output.writeDouble(player.paradiseReturnY);
+        output.writeDouble(player.paradiseReturnZ);
+        output.writeInt(player.paradiseReturnDimensionId);
+    }
+
+    private void readParadisePlayerState(DataInputStream input, PlayerState player, int version) throws IOException {
+        player.dimensionId = version >= 2 ? input.readInt() : GameConfig.DIMENSION_OVERWORLD;
+        player.hasParadiseReturn = input.readBoolean();
+        player.paradiseReturnX = input.readDouble();
+        player.paradiseReturnY = input.readDouble();
+        player.paradiseReturnZ = input.readDouble();
+        player.paradiseReturnDimensionId = input.available() >= 4 ? input.readInt() : GameConfig.DIMENSION_OVERWORLD;
     }
 
     private void loadContainers() {
@@ -1226,6 +1588,9 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     private double maxMobHealth(MobKind kind) {
+        if (kind == MobKind.HERRING || kind == MobKind.SALMON) {
+            return 4.0;
+        }
         return kind == MobKind.COW || kind == MobKind.SHEEP || kind == MobKind.PIG ? 10.0 : 20.0;
     }
 
@@ -1233,16 +1598,19 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (player == null) {
             return;
         }
+        setActiveDimensionFor(player);
 
         mobUpdateCounter++;
         hostileMobSpawnCooldown -= deltaTime;
+        fishSpawnCooldown -= deltaTime;
         populateVillageResidentsNear(player);
         maybeSpawnZombieNearPlayer(player);
+        maybeSpawnFishNearPlayer(player);
 
         int aiUpdates = 0;
         for (int i = mobs.size() - 1; i >= 0; i--) {
             MobEntity mob = mobs.get(i);
-            double despawnDistance = mob.kind == MobKind.VILLAGER ? 220.0 : 96.0;
+            double despawnDistance = mob.kind == MobKind.VILLAGER ? 220.0 : (isFishMob(mob) ? 80.0 : 96.0);
             double playerDistanceSquared = distanceSquared(mob.x, mob.z, player.x, player.z);
             if (mob.health <= 0) {
                 dropMobLoot(mob);
@@ -1256,11 +1624,11 @@ final class VoxelWorld implements StructureTemplates.Target {
 
             boolean inWater = intersectsFluid(
                 mob.x, mob.y, mob.z,
-                GameConfig.ZOMBIE_RADIUS, GameConfig.ZOMBIE_HEIGHT, GameConfig.WATER
+                mob.radius(), mob.height(), GameConfig.WATER
             );
             boolean inLava = intersectsFluid(
                 mob.x, mob.y, mob.z,
-                GameConfig.ZOMBIE_RADIUS, GameConfig.ZOMBIE_HEIGHT, GameConfig.LAVA
+                mob.radius(), mob.height(), GameConfig.LAVA
             );
             if (inWater != mob.wasInWater) {
                 mob.splashQueued = true;
@@ -1274,6 +1642,12 @@ final class VoxelWorld implements StructureTemplates.Target {
                     mob.health -= GameConfig.LAVA_DAMAGE;
                     mob.fireDamageTimer = GameConfig.LAVA_DAMAGE_INTERVAL;
                 }
+            } else if (isFishMob(mob) && !inWater) {
+                mob.fireDamageTimer -= deltaTime;
+                if (mob.fireDamageTimer <= 0.0) {
+                    mob.health -= 1.0;
+                    mob.fireDamageTimer = 0.75;
+                }
             } else if (isSunBurningMob(mob, inWater)) {
                 mob.fireTimer = Math.max(mob.fireTimer, 1.2);
                 mob.fireDamageTimer -= deltaTime;
@@ -1285,6 +1659,10 @@ final class VoxelWorld implements StructureTemplates.Target {
                 mob.fireTimer = Math.max(0.0, mob.fireTimer - deltaTime);
             }
             mob.hurtCooldown = Math.max(0.0, mob.hurtCooldown - deltaTime);
+            if (touchesBlock(mob.x, mob.y, mob.z, mob.radius() + 0.06, mob.height(), GameConfig.CACTUS) && mob.hurtCooldown <= 0.0) {
+                mob.health -= 1.0;
+                mob.hurtCooldown = 0.65;
+            }
             mob.fleeTimer = Math.max(0.0, mob.fleeTimer - deltaTime);
             mob.loveTimer = Math.max(0.0, mob.loveTimer - deltaTime);
             mob.breedCooldown = Math.max(0.0, mob.breedCooldown - deltaTime);
@@ -1313,6 +1691,10 @@ final class VoxelWorld implements StructureTemplates.Target {
 
     private boolean isPassiveMob(MobEntity mob) {
         return mob != null && (mob.kind == MobKind.PIG || mob.kind == MobKind.SHEEP || mob.kind == MobKind.COW);
+    }
+
+    private boolean isFishMob(MobEntity mob) {
+        return mob != null && (mob.kind == MobKind.HERRING || mob.kind == MobKind.SALMON);
     }
 
     private int zombieAiInterval(double playerDistanceSquared) {
@@ -1344,6 +1726,12 @@ final class VoxelWorld implements StructureTemplates.Target {
                 if (worldRandom.nextDouble() < 0.65) {
                     spawnDroppedItem(InventoryItems.RAW_MUTTON, 1, mob.x, mob.y + 0.45, mob.z);
                 }
+                break;
+            case HERRING:
+                spawnDroppedItem(InventoryItems.RAW_HERRING, 1, mob.x, mob.y + 0.18, mob.z);
+                break;
+            case SALMON:
+                spawnDroppedItem(InventoryItems.RAW_SALMON, 1, mob.x, mob.y + 0.18, mob.z);
                 break;
             case SKELETON:
                 spawnDroppedItem(InventoryItems.BONE, 1 + worldRandom.nextInt(2), mob.x, mob.y + 0.45, mob.z);
@@ -1448,7 +1836,9 @@ final class VoxelWorld implements StructureTemplates.Target {
             return false;
         }
         byte targetBlock = getBlock(hit.x, hit.y, hit.z);
-        if (GameConfig.isLiquidBlock(targetBlock) || targetBlock == GameConfig.BEDROCK || targetBlock == GameConfig.AIR) {
+        if ((GameConfig.isLiquidBlock(targetBlock) && !isAquaticPlantBlock(targetBlock))
+            || targetBlock == GameConfig.BEDROCK
+            || targetBlock == GameConfig.AIR) {
             return false;
         }
 
@@ -1466,6 +1856,9 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
         if (targetBlock == GameConfig.OAK_LOG || targetBlock == GameConfig.PINE_LOG || targetBlock == GameConfig.BIRCH_LOG) {
             scheduleUnsupportedLeavesAround(hit.x, hit.y, hit.z);
+        }
+        if (targetBlock == GameConfig.GLASS || targetBlock == GameConfig.PARADISE_PORTAL) {
+            refreshParadisePortalsNear(hit.x, hit.y, hit.z);
         }
         updatePlantSupportAt(hit.x, hit.y + 1, hit.z);
         updateSnowSupportAt(hit.x, hit.y + 1, hit.z);
@@ -1696,6 +2089,131 @@ final class VoxelWorld implements StructureTemplates.Target {
         return StructureTemplates.listNames();
     }
 
+    boolean activateParadisePortalAtFrame(int x, int y, int z) {
+        for (int axis = 0; axis < 2; axis++) {
+            for (int widthOffset = 0; widthOffset < 4; widthOffset++) {
+                for (int heightOffset = 0; heightOffset < 5; heightOffset++) {
+                    int originX = axis == 0 ? x - widthOffset : x;
+                    int originZ = axis == 0 ? z : z - widthOffset;
+                    int originY = y - heightOffset;
+                    if (!isValidParadisePortalFrame(originX, originY, originZ, axis, true)) {
+                        continue;
+                    }
+                    if (isCompleteParadisePortal(originX, originY, originZ, axis)) {
+                        return false;
+                    }
+                    fillParadisePortalInterior(originX, originY, originZ, axis);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void refreshParadisePortalsNear(int x, int y, int z) {
+        for (int axis = 0; axis < 2; axis++) {
+            for (int originY = y - 4; originY <= y; originY++) {
+                for (int widthOffset = -1; widthOffset <= 3; widthOffset++) {
+                    for (int depthOffset = -1; depthOffset <= 1; depthOffset++) {
+                        int originX = axis == 0 ? x - widthOffset : x + depthOffset;
+                        int originZ = axis == 0 ? z + depthOffset : z - widthOffset;
+                        if (!portalInteriorContainsPortal(originX, originY, originZ, axis)) {
+                            continue;
+                        }
+                        if (!isCompleteParadisePortal(originX, originY, originZ, axis)) {
+                            clearParadisePortalInterior(originX, originY, originZ, axis);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean isCompleteParadisePortal(int originX, int originY, int originZ, int axis) {
+        if (!isValidParadisePortalFrame(originX, originY, originZ, axis, true)) {
+            return false;
+        }
+        for (int width = 1; width <= 2; width++) {
+            for (int height = 1; height <= 3; height++) {
+                int cellX = axis == 0 ? originX + width : originX;
+                int cellZ = axis == 0 ? originZ : originZ + width;
+                if (getBlock(cellX, originY + height, cellZ) != GameConfig.PARADISE_PORTAL) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean portalInteriorContainsPortal(int originX, int originY, int originZ, int axis) {
+        for (int width = 1; width <= 2; width++) {
+            for (int height = 1; height <= 3; height++) {
+                int cellX = axis == 0 ? originX + width : originX;
+                int cellZ = axis == 0 ? originZ : originZ + width;
+                if (getBlock(cellX, originY + height, cellZ) == GameConfig.PARADISE_PORTAL) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isValidParadisePortalFrame(int originX, int originY, int originZ, int axis, boolean allowPortalInterior) {
+        for (int width = 0; width < 4; width++) {
+            int cellX = axis == 0 ? originX + width : originX;
+            int cellZ = axis == 0 ? originZ : originZ + width;
+            if (getBlock(cellX, originY, cellZ) != GameConfig.GLASS
+                || getBlock(cellX, originY + 4, cellZ) != GameConfig.GLASS) {
+                return false;
+            }
+        }
+        for (int height = 1; height <= 3; height++) {
+            int rightX = axis == 0 ? originX + 3 : originX;
+            int rightZ = axis == 0 ? originZ : originZ + 3;
+            if (getBlock(originX, originY + height, originZ) != GameConfig.GLASS
+                || getBlock(rightX, originY + height, rightZ) != GameConfig.GLASS) {
+                return false;
+            }
+        }
+        for (int width = 1; width <= 2; width++) {
+            for (int height = 1; height <= 3; height++) {
+                int cellX = axis == 0 ? originX + width : originX;
+                int cellZ = axis == 0 ? originZ : originZ + width;
+                byte block = getBlock(cellX, originY + height, cellZ);
+                if (block != GameConfig.AIR && (!allowPortalInterior || block != GameConfig.PARADISE_PORTAL)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private void fillParadisePortalInterior(int originX, int originY, int originZ, int axis) {
+        for (int width = 1; width <= 2; width++) {
+            for (int height = 1; height <= 3; height++) {
+                int cellX = axis == 0 ? originX + width : originX;
+                int cellZ = axis == 0 ? originZ : originZ + width;
+                setBlockState(cellX, originY + height, cellZ, GameConfig.PARADISE_PORTAL, -1);
+                refreshDynamicCellsAround(cellX, originY + height, cellZ);
+                refreshSurfaceHeight(cellX, cellZ);
+            }
+        }
+    }
+
+    private void clearParadisePortalInterior(int originX, int originY, int originZ, int axis) {
+        for (int width = 1; width <= 2; width++) {
+            for (int height = 1; height <= 3; height++) {
+                int cellX = axis == 0 ? originX + width : originX;
+                int cellZ = axis == 0 ? originZ : originZ + width;
+                if (getBlock(cellX, originY + height, cellZ) == GameConfig.PARADISE_PORTAL) {
+                    setBlockState(cellX, originY + height, cellZ, GameConfig.AIR, -1);
+                    refreshDynamicCellsAround(cellX, originY + height, cellZ);
+                    refreshSurfaceHeight(cellX, cellZ);
+                }
+            }
+        }
+    }
+
     void spawnDroppedItem(byte itemId, int count, double x, double y, double z) {
         spawnDroppedItem(itemId, count, 0, x, y, z);
     }
@@ -1784,6 +2302,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     void updateDroppedItems(PlayerState player, PlayerInventory inventory, double deltaTime) {
+        setActiveDimensionFor(player);
         droppedItemUpdateCounter++;
         for (int i = droppedItems.size() - 1; i >= 0; i--) {
             DroppedItem droppedItem = droppedItems.get(i);
@@ -1831,6 +2350,10 @@ final class VoxelWorld implements StructureTemplates.Target {
             return false;
         }
 
+        if (block == GameConfig.TORCH && activateParadisePortalAtFrame(hit.x, hit.y, hit.z)) {
+            return true;
+        }
+
         byte placedBlock = GameConfig.placedBlockForItem(block);
         int placeX = hit.previousX;
         int placeY = hit.previousY;
@@ -1846,6 +2369,12 @@ final class VoxelWorld implements StructureTemplates.Target {
             return false;
         }
 
+        if (isCropBlock(placedBlock)) {
+            return placeCrop(placeX, placeY, placeZ, placedBlock);
+        }
+        if (isAquaticPlantBlock(placedBlock)) {
+            return placeAquaticPlant(placeX, placeY, placeZ, placedBlock);
+        }
         if (placedBlock == GameConfig.OAK_DOOR) {
             return placeDoor(placeX, placeY, placeZ, player);
         }
@@ -1867,7 +2396,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
 
         boolean solidPlacement = isSolidBlock(placedBlock);
-        if (solidPlacement && blockIntersectsPlayerHitbox(placeX, placeY, placeZ, placedBlock, player)) {
+        if (solidPlacement && blockIntersectsEntityHitboxes(placeX, placeY, placeZ, placedBlock, player)) {
             return false;
         }
 
@@ -1884,8 +2413,54 @@ final class VoxelWorld implements StructureTemplates.Target {
         updatePlantSupportAt(placeX, placeY + 1, placeZ);
         updateDoorSupportAt(placeX, placeY + 1, placeZ);
         refreshDynamicCellsAround(placeX, placeY, placeZ);
+        refreshParadisePortalsNear(placeX, placeY, placeZ);
         markDirtyBlock(placeX, placeY, placeZ);
         refreshSurfaceHeight(placeX, placeZ);
+        return true;
+    }
+
+    private boolean placeCrop(int x, int y, int z, byte cropBlock) {
+        if (!isInside(x, y, z) || y <= GameConfig.WORLD_MIN_Y || getBlock(x, y - 1, z) != GameConfig.FARMLAND) {
+            return false;
+        }
+        if (!isReplaceableForPlacement(getBlock(x, y, z))) {
+            return false;
+        }
+        setBlockState(x, y, z, Blocks.withData(cropBlock, 0));
+        updatePlantSupportAt(x, y + 1, z);
+        refreshDynamicCellsAround(x, y, z);
+        markDirtyBlock(x, y, z);
+        refreshSurfaceHeight(x, z);
+        return true;
+    }
+
+    private boolean placeAquaticPlant(int x, int y, int z, byte plantBlock) {
+        if (!isInside(x, y, z) || y <= GameConfig.WORLD_MIN_Y || y + 1 > GameConfig.WORLD_MAX_Y) {
+            return false;
+        }
+        byte current = getBlock(x, y, z);
+        byte support = getBlock(x, y - 1, z);
+        if (!GameConfig.isWaterBlock(current) || !GameConfig.isWaterBlock(getBlock(x, y + 1, z))) {
+            return false;
+        }
+        if (support != GameConfig.SAND
+            && support != GameConfig.GRAVEL
+            && support != GameConfig.CLAY
+            && support != GameConfig.DIRT
+            && support != GameConfig.KELP) {
+            return false;
+        }
+        if (plantBlock == GameConfig.KELP) {
+            int segment = support == GameConfig.KELP ? 2 : 0;
+            setBlockState(x, y, z, Blocks.withData(plantBlock, segment));
+            if (support == GameConfig.KELP) {
+                setBlockState(x, y - 1, z, Blocks.withData(GameConfig.KELP, 1));
+            }
+        } else {
+            setBlockState(x, y, z, plantBlock, 0);
+        }
+        refreshDynamicCellsAround(x, y, z);
+        markDirtyBlock(x, y, z);
         return true;
     }
 
@@ -1923,7 +2498,8 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (!isSolidBlock(getBlock(x, y - 1, z))) {
             return false;
         }
-        if (blockIntersectsPlayerHitbox(x, y, z, player) || blockIntersectsPlayerHitbox(x, y + 1, z, player)) {
+        if (blockIntersectsEntityHitboxes(x, y, z, GameConfig.OAK_DOOR, player)
+            || blockIntersectsEntityHitboxes(x, y + 1, z, GameConfig.OAK_DOOR, player)) {
             return false;
         }
         int facing = player == null ? 2 : facingFromYaw(player.yaw);
@@ -1942,7 +2518,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (!Blocks.isReplaceable(targetBlock) && !GameConfig.isLiquidBlock(targetBlock)) {
             return false;
         }
-        if (blockIntersectsPlayerHitbox(x, y, z, block, player)) {
+        if (blockIntersectsEntityHitboxes(x, y, z, block, player)) {
             return false;
         }
         int facing = player == null ? 0 : facingFromYaw(player.yaw);
@@ -1959,7 +2535,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (!isInside(x, y, z) || y <= GameConfig.WORLD_MIN_Y || !isReplaceableForPlacement(getBlock(x, y, z))) {
             return false;
         }
-        if (!isSolidBlock(getBlock(x, y - 1, z)) || blockIntersectsPlayerHitbox(x, y, z, player)) {
+        if (!isSolidBlock(getBlock(x, y - 1, z)) || blockIntersectsEntityHitboxes(x, y, z, GameConfig.OAK_FENCE_GATE, player)) {
             return false;
         }
         int facing = player == null ? 2 : facingFromYaw(player.yaw);
@@ -1986,7 +2562,8 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (!isSolidBlock(getBlock(x, y - 1, z)) || !isSolidBlock(getBlock(headX, y - 1, headZ))) {
             return false;
         }
-        if (blockIntersectsPlayerHitbox(x, y, z, player) || blockIntersectsPlayerHitbox(headX, y, headZ, player)) {
+        if (blockIntersectsEntityHitboxes(x, y, z, GameConfig.RED_BED, player)
+            || blockIntersectsEntityHitboxes(headX, y, headZ, GameConfig.RED_BED, player)) {
             return false;
         }
         setBlockState(x, y, z, Blocks.bedState(false, facing));
@@ -2034,6 +2611,16 @@ final class VoxelWorld implements StructureTemplates.Target {
 
     private boolean isReplaceableForPlacement(byte block) {
         return Blocks.isReplaceable(block) || GameConfig.isLiquidBlock(block);
+    }
+
+    private boolean isCropBlock(byte block) {
+        return block == GameConfig.WHEAT_CROP
+            || block == GameConfig.CARROT_CROP
+            || block == GameConfig.POTATO_CROP;
+    }
+
+    private boolean isAquaticPlantBlock(byte block) {
+        return block == GameConfig.SEAGRASS || block == GameConfig.KELP;
     }
 
     private int facingFromYaw(double yaw) {
@@ -2161,7 +2748,7 @@ final class VoxelWorld implements StructureTemplates.Target {
         while (traveled <= maxDistance) {
             if (isInside(blockX, blockY, blockZ)) {
                 byte block = getBlock(blockX, blockY, blockZ);
-                if (block != GameConfig.AIR && !GameConfig.isLiquidBlock(block)) {
+                if (block != GameConfig.AIR && (!GameConfig.isLiquidBlock(block) || isAquaticPlantBlock(block))) {
                     double[] bounds = selectionBounds(block, getBlockState(blockX, blockY, blockZ));
                     if (rayIntersectsAabb(originX, originY, originZ, dirX, dirY, dirZ,
                         blockX + bounds[0], blockY + bounds[1], blockZ + bounds[2],
@@ -2201,16 +2788,22 @@ final class VoxelWorld implements StructureTemplates.Target {
             case GameConfig.FARMLAND:
                 return new double[]{0.0, 0.0, 0.0, 1.0, 0.9375, 1.0};
             case GameConfig.WHEAT_CROP:
+            case GameConfig.CARROT_CROP:
+            case GameConfig.POTATO_CROP:
             case GameConfig.TALL_GRASS:
             case GameConfig.RED_FLOWER:
             case GameConfig.YELLOW_FLOWER:
             case GameConfig.SEAGRASS:
+            case GameConfig.KELP:
             case GameConfig.DEAD_BUSH:
                 return new double[]{0.18, 0.0, 0.18, 0.82, 0.86, 0.82};
             case GameConfig.RAIL:
                 return new double[]{0.0, 0.0, 0.0, 1.0, 0.075, 1.0};
             case GameConfig.TORCH:
                 return new double[]{0.40, 0.0, 0.40, 0.60, 0.82, 0.60};
+            case GameConfig.PARADISE_PORTAL:
+                double inset = (1.0 - GameConfig.PARADISE_PORTAL_RENDER_THICKNESS) * 0.5;
+                return new double[]{inset, 0.0, inset, 1.0 - inset, 1.0, 1.0 - inset};
             case GameConfig.OAK_FENCE:
                 return new double[]{0.375, 0.0, 0.375, 0.625, 1.5, 0.625};
             case GameConfig.OAK_FENCE_GATE:
@@ -2697,11 +3290,13 @@ final class VoxelWorld implements StructureTemplates.Target {
         ChunkColumn column = loadedColumns.get(columnKey(chunkX, chunkZ));
         output.writeInt(chunkX);
         output.writeInt(chunkZ);
+        output.writeInt(activeDimensionId);
         if (column == null) {
             output.writeBoolean(false);
             return;
         }
         output.writeBoolean(true);
+        output.writeInt(column.status.ordinal());
         for (int i = 0; i < column.surfaceHeights.length; i++) {
             output.writeShort(column.surfaceHeights[i]);
         }
@@ -2748,22 +3343,31 @@ final class VoxelWorld implements StructureTemplates.Target {
     long readNetworkColumn(DataInputStream input) throws IOException {
         int chunkX = input.readInt();
         int chunkZ = input.readInt();
+        int dimensionId = input.readInt();
+        setActiveDimension(dimensionId);
         boolean present = input.readBoolean();
         if (!present) {
             return columnKey(chunkX, chunkZ);
         }
         ChunkColumn column = new ChunkColumn(chunkX, chunkZ);
+        column.status = ChunkGenerationStatus.fromOrdinal(input.readInt());
         for (int i = 0; i < column.surfaceHeights.length; i++) {
             column.surfaceHeights[i] = input.readShort();
         }
         int sectionCount = input.readInt();
+        if (sectionCount != GameConfig.SECTION_COUNT) {
+            throw new IOException("invalid network chunk section count");
+        }
+        boolean[] seenSections = new boolean[GameConfig.SECTION_COUNT];
         for (int section = 0; section < sectionCount; section++) {
             int chunkY = input.readInt();
             int runs = input.readInt();
             int sectionBytes = input.readInt();
-            if (chunkY < 0 || chunkY >= GameConfig.SECTION_COUNT || sectionBytes < 0 || sectionBytes > MultiplayerProtocol.MAX_PACKET_BYTES) {
+            if (chunkY < 0 || chunkY >= GameConfig.SECTION_COUNT || seenSections[chunkY]
+                || runs <= 0 || sectionBytes < 0 || sectionBytes > MultiplayerProtocol.MAX_PACKET_BYTES) {
                 throw new IOException("invalid network chunk section");
             }
+            seenSections[chunkY] = true;
             byte[] payload = new byte[sectionBytes];
             input.readFully(payload);
             DataInputStream sectionInput = new DataInputStream(new ByteArrayInputStream(payload));
@@ -2771,15 +3375,24 @@ final class VoxelWorld implements StructureTemplates.Target {
             int index = 0;
             for (int run = 0; run < runs; run++) {
                 int count = sectionInput.readInt();
+                if (count <= 0 || index + count > Chunk.VOLUME) {
+                    throw new IOException("invalid network chunk run");
+                }
                 String id = sectionInput.readUTF();
                 int distance = sectionInput.readByte();
                 BlockState state = Blocks.stateFromNamespacedId(id);
-                for (int i = 0; i < count && index < Chunk.VOLUME; i++) {
+                for (int i = 0; i < count; i++) {
                     chunk.setSerializedCellState(index++, state, distance);
                 }
             }
+            if (index != Chunk.VOLUME || sectionInput.available() != 0) {
+                throw new IOException("invalid network chunk run length");
+            }
         }
         column.generated = true;
+        if (column.status != ChunkGenerationStatus.FULL) {
+            column.status = ChunkGenerationStatus.FULL;
+        }
         ChunkColumn previous = loadedColumns.put(columnKey(chunkX, chunkZ), column);
         if (previous != null) {
             removeColumnDynamicBlocks(previous);
@@ -3013,9 +3626,12 @@ final class VoxelWorld implements StructureTemplates.Target {
     boolean isCrossPlant(byte block) {
         return block == GameConfig.TALL_GRASS
             || block == GameConfig.SEAGRASS
+            || block == GameConfig.KELP
             || block == GameConfig.RED_FLOWER
             || block == GameConfig.YELLOW_FLOWER
             || block == GameConfig.WHEAT_CROP
+            || block == GameConfig.CARROT_CROP
+            || block == GameConfig.POTATO_CROP
             || block == GameConfig.DEAD_BUSH
             || block == GameConfig.TORCH;
     }
@@ -3063,6 +3679,39 @@ final class VoxelWorld implements StructureTemplates.Target {
         tickSand(playerChunkX, playerChunkZ);
         if ((worldTickCounter & 31L) == 0L) {
             tickGrassSpread(playerChunkX, playerChunkZ);
+        }
+        if ((worldTickCounter & 15L) == 0L) {
+            tickCropGrowth(playerChunkX, playerChunkZ);
+        }
+    }
+
+    private void tickCropGrowth(int playerChunkX, int playerChunkZ) {
+        for (int attempt = 0; attempt < 48; attempt++) {
+            int chunkX = playerChunkX + worldRandom.nextInt(7) - 3;
+            int chunkZ = playerChunkZ + worldRandom.nextInt(7) - 3;
+            ChunkColumn column = loadedColumns.get(columnKey(chunkX, chunkZ));
+            if (column == null) {
+                continue;
+            }
+            int x = chunkX * GameConfig.CHUNK_SIZE + worldRandom.nextInt(GameConfig.CHUNK_SIZE);
+            int z = chunkZ * GameConfig.CHUNK_SIZE + worldRandom.nextInt(GameConfig.CHUNK_SIZE);
+            int surfaceY = column.getSurfaceHeightLocal(localBlockCoordinate(x), localBlockCoordinate(z));
+            int minY = Math.max(GameConfig.WORLD_MIN_Y + 1, surfaceY - 2);
+            int maxY = Math.min(GameConfig.WORLD_MAX_Y, surfaceY + 2);
+            for (int y = minY; y <= maxY; y++) {
+                byte block = getBlock(x, y, z);
+                if (!isCropBlock(block) || !canPlantStay(x, y, z)) {
+                    continue;
+                }
+                BlockState state = getBlockState(x, y, z);
+                int stage = state == null ? 0 : state.data;
+                if (stage >= 7 || worldRandom.nextDouble() > 0.34) {
+                    continue;
+                }
+                setBlockState(x, y, z, Blocks.withData(block, stage + 1));
+                markDirtyBlock(x, y, z);
+                break;
+            }
         }
     }
 
@@ -3623,6 +4272,10 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     private void updateMobAi(MobEntity mob, PlayerState player, double deltaTime) {
+        if (isFishMob(mob)) {
+            updateFishAi(mob, deltaTime);
+            return;
+        }
         if (mob.kind == MobKind.VILLAGER) {
             updateVillagerAi(mob, deltaTime);
             return;
@@ -3694,6 +4347,27 @@ final class VoxelWorld implements StructureTemplates.Target {
         double blend = Math.min(1.0, deltaTime * 8.0);
         mob.velocityX += (targetVelocityX - mob.velocityX) * blend;
         mob.velocityZ += (targetVelocityZ - mob.velocityZ) * blend;
+    }
+
+    private void updateFishAi(MobEntity fish, double deltaTime) {
+        fish.wanderTime -= deltaTime;
+        if (fish.wanderTime <= 0.0) {
+            chooseMobDirection(fish, false);
+            fish.wanderTime = 0.9 + fish.random.nextDouble() * 1.6;
+            fish.wanderDirection = fish.random.nextDouble() - 0.5;
+        }
+        double speed = fish.kind == MobKind.SALMON ? 1.25 : 1.05;
+        double targetVelocityX = directionMoveX(fish.directionIndex) * speed;
+        double targetVelocityZ = directionMoveZ(fish.directionIndex) * speed;
+        fish.targetBodyYaw = angleForDirectionIndex(fish.directionIndex);
+        if (!GameConfig.isWaterBlock(getBlock((int) Math.floor(fish.x), (int) Math.floor(fish.y), (int) Math.floor(fish.z)))) {
+            fish.wanderDirection = -0.8;
+        }
+        double targetVelocityY = clamp(fish.wanderDirection * 0.85, -0.85, 0.85);
+        double blend = Math.min(1.0, deltaTime * 5.0);
+        fish.velocityX += (targetVelocityX - fish.velocityX) * blend;
+        fish.velocityZ += (targetVelocityZ - fish.velocityZ) * blend;
+        fish.verticalVelocity += (targetVelocityY - fish.verticalVelocity) * blend;
     }
 
     private void updateVillagerAi(MobEntity villager, double deltaTime) {
@@ -4088,7 +4762,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     private void maybeSpawnZombieNearPlayer(PlayerState player) {
-        if (player == null || player.creativeMode || player.spectatorMode || mobs.size() >= HOSTILE_MOB_TARGET_COUNT || hostileMobSpawnCooldown > 0.0) {
+        if (player == null || player.spectatorMode || mobs.size() >= HOSTILE_MOB_TARGET_COUNT || hostileMobSpawnCooldown > 0.0) {
             return;
         }
 
@@ -4124,6 +4798,10 @@ final class VoxelWorld implements StructureTemplates.Target {
                 continue;
             }
             MobKind kind = chooseSpawnMobKind(day, blockX, surfaceY, blockZ);
+            if ((kind == MobKind.PIG || kind == MobKind.SHEEP || kind == MobKind.COW)
+                && !isValidPassiveSpawnSurface(blockX, surfaceY, blockZ)) {
+                continue;
+            }
             double mobX = blockX + 0.5;
             double mobY = surfaceY + 1.01;
             double mobZ = blockZ + 0.5;
@@ -4133,6 +4811,57 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
 
         hostileMobSpawnCooldown = 0.8;
+    }
+
+    private void maybeSpawnFishNearPlayer(PlayerState player) {
+        if (player == null || player.spectatorMode || fishSpawnCooldown > 0.0 || countFishMobs() >= FISH_MOB_TARGET_COUNT) {
+            return;
+        }
+        for (int attempt = 0; attempt < 16; attempt++) {
+            int offsetX = worldRandom.nextInt(56) - 28;
+            int offsetZ = worldRandom.nextInt(56) - 28;
+            if (Math.abs(offsetX) < 10 && Math.abs(offsetZ) < 10) {
+                continue;
+            }
+            int blockX = (int) Math.floor(player.x) + offsetX;
+            int blockZ = (int) Math.floor(player.z) + offsetZ;
+            int chunkX = worldToChunk(blockX);
+            int chunkZ = worldToChunk(blockZ);
+            if (!isChunkLoaded(chunkX, chunkZ)) {
+                continue;
+            }
+            int surfaceY = getSurfaceHeight(blockX, blockZ);
+            if (surfaceY >= GameConfig.SEA_LEVEL - 2 || surfaceY <= GameConfig.WORLD_MIN_Y) {
+                continue;
+            }
+            int spawnY = clamp(surfaceY + 2 + worldRandom.nextInt(Math.max(1, GameConfig.SEA_LEVEL - surfaceY - 2)), surfaceY + 1, GameConfig.SEA_LEVEL - 1);
+            if (!GameConfig.isWaterBlock(getBlock(blockX, spawnY, blockZ)) || !GameConfig.isWaterBlock(getBlock(blockX, spawnY + 1, blockZ))) {
+                continue;
+            }
+            MobKind kind = worldRandom.nextDouble() < 0.72 ? MobKind.HERRING : MobKind.SALMON;
+            int group = kind == MobKind.HERRING ? 3 + worldRandom.nextInt(4) : 1 + worldRandom.nextInt(3);
+            for (int i = 0; i < group && countFishMobs() < FISH_MOB_TARGET_COUNT; i++) {
+                double mobX = blockX + 0.25 + worldRandom.nextDouble() * 0.5 + (worldRandom.nextDouble() - 0.5) * 2.2;
+                double mobY = spawnY + (worldRandom.nextDouble() - 0.5) * 1.2;
+                double mobZ = blockZ + 0.25 + worldRandom.nextDouble() * 0.5 + (worldRandom.nextDouble() - 0.5) * 2.2;
+                if (GameConfig.isWaterBlock(getBlock((int) Math.floor(mobX), (int) Math.floor(mobY), (int) Math.floor(mobZ)))) {
+                    mobs.add(new MobEntity(kind, mobX, mobY, mobZ, mobX, mobZ, worldRandom));
+                }
+            }
+            fishSpawnCooldown = 1.4 + worldRandom.nextDouble() * 1.8;
+            return;
+        }
+        fishSpawnCooldown = 0.8;
+    }
+
+    private int countFishMobs() {
+        int count = 0;
+        for (MobEntity mob : mobs) {
+            if (isFishMob(mob)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private MobKind chooseSpawnMobKind(boolean day, int blockX, int surfaceY, int blockZ) {
@@ -4149,33 +4878,74 @@ final class VoxelWorld implements StructureTemplates.Target {
         return MobKind.COW;
     }
 
-    private boolean blockIntersectsPlayerHitbox(int blockX, int blockY, int blockZ, PlayerState player) {
-        return blockIntersectsPlayerHitbox(blockX, blockY, blockZ, getBlock(blockX, blockY, blockZ), player);
+    private boolean isValidPassiveSpawnSurface(int blockX, int surfaceY, int blockZ) {
+        byte surface = getBlock(blockX, surfaceY, blockZ);
+        if (surface != GameConfig.GRASS && surface != GameConfig.SAND) {
+            return false;
+        }
+        byte support = getBlock(blockX, surfaceY - 1, blockZ);
+        return Blocks.isSolid(support)
+            && getBlock(blockX, surfaceY + 1, blockZ) == GameConfig.AIR
+            && getBlock(blockX, surfaceY + 2, blockZ) == GameConfig.AIR;
     }
 
     private boolean blockIntersectsPlayerHitbox(int blockX, int blockY, int blockZ, byte block, PlayerState player) {
         if (player == null || player.spectatorMode) {
             return false;
         }
+        double[] bounds = blockBounds(blockX, blockY, blockZ, block);
+        return intersectsEntityBox(
+            bounds,
+            player.x - GameConfig.PLAYER_RADIUS,
+            player.y,
+            player.z - GameConfig.PLAYER_RADIUS,
+            player.x + GameConfig.PLAYER_RADIUS,
+            player.y + player.height(),
+            player.z + GameConfig.PLAYER_RADIUS
+        );
+    }
+
+    private boolean blockIntersectsEntityHitboxes(int blockX, int blockY, int blockZ, byte block, PlayerState player) {
+        if (blockIntersectsPlayerHitbox(blockX, blockY, blockZ, block, player)) {
+            return true;
+        }
+        double[] bounds = blockBounds(blockX, blockY, blockZ, block);
+        for (MobEntity mob : mobs) {
+            double radius = mob.radius();
+            if (intersectsEntityBox(
+                bounds,
+                mob.x - radius,
+                mob.y,
+                mob.z - radius,
+                mob.x + radius,
+                mob.y + mob.height(),
+                mob.z + radius
+            )) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private double[] blockBounds(int blockX, int blockY, int blockZ, byte block) {
         BlockState state = new BlockState(Blocks.typeFromLegacyId(block));
         double[] bounds = selectionBounds(block, state);
-        double blockMinX = blockX + bounds[0];
-        double blockMaxX = blockX + bounds[3];
-        double blockMinY = blockY + bounds[1];
-        double blockMaxY = blockY + bounds[4];
-        double blockMinZ = blockZ + bounds[2];
-        double blockMaxZ = blockZ + bounds[5];
+        return new double[]{
+            blockX + bounds[0],
+            blockY + bounds[1],
+            blockZ + bounds[2],
+            blockX + bounds[3],
+            blockY + bounds[4],
+            blockZ + bounds[5]
+        };
+    }
 
-        double playerMinX = player.x - GameConfig.PLAYER_RADIUS;
-        double playerMaxX = player.x + GameConfig.PLAYER_RADIUS;
-        double playerMinY = player.y;
-        double playerMaxY = player.y + player.height();
-        double playerMinZ = player.z - GameConfig.PLAYER_RADIUS;
-        double playerMaxZ = player.z + GameConfig.PLAYER_RADIUS;
-
-        return playerMaxX > blockMinX && playerMinX < blockMaxX
-            && playerMaxY > blockMinY && playerMinY < blockMaxY
-            && playerMaxZ > blockMinZ && playerMinZ < blockMaxZ;
+    private boolean intersectsEntityBox(double[] bounds,
+                                        double minX, double minY, double minZ,
+                                        double maxX, double maxY, double maxZ) {
+        return maxX > bounds[0] && minX < bounds[3]
+            && maxY > bounds[1] && minY < bounds[4]
+            && maxZ > bounds[2] && minZ < bounds[5];
     }
 
     private int ensureColumnsAround(int centerChunkX, int centerChunkZ, int chunkRadius, boolean synchronousOnly) {
@@ -4455,8 +5225,9 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (networkMirrorMode) {
             return null;
         }
-        if (regionStorage != null) {
-            ChunkColumn loaded = regionStorage.loadColumn(chunkX, chunkZ);
+        RegionStorage storage = storageForColumn(chunkX, chunkZ);
+        if (storage != null) {
+            ChunkColumn loaded = storage.loadColumn(chunkX, chunkZ);
             if (loaded != null) {
                 return loaded;
             }
@@ -4546,6 +5317,13 @@ final class VoxelWorld implements StructureTemplates.Target {
             logGenerationProfile(System.nanoTime() - startNs);
         }
         return column;
+    }
+
+    private RegionStorage storageForColumn(int chunkX, int chunkZ) {
+        if (GameConfig.isParadiseDimension(activeDimensionId) && paradiseRegionStorage != null) {
+            return paradiseRegionStorage;
+        }
+        return regionStorage;
     }
 
     private void logStreamingProfile(
@@ -4946,6 +5724,19 @@ final class VoxelWorld implements StructureTemplates.Target {
         if (!isInside(x, y, z) || y <= GameConfig.WORLD_MIN_Y) {
             return false;
         }
+        byte plant = getBlock(x, y, z);
+        if (isCropBlock(plant)) {
+            return getBlock(x, y - 1, z) == GameConfig.FARMLAND;
+        }
+        if (plant == GameConfig.SEAGRASS || plant == GameConfig.KELP) {
+            byte support = getBlock(x, y - 1, z);
+            return GameConfig.isWaterBlock(getBlock(x, y + 1, z))
+                && (support == GameConfig.SAND
+                    || support == GameConfig.GRAVEL
+                    || support == GameConfig.CLAY
+                    || support == GameConfig.DIRT
+                    || support == GameConfig.KELP);
+        }
         byte supportBlock = getBlock(x, y - 1, z);
         return Blocks.isSolid(supportBlock)
             && (supportBlock == GameConfig.GRASS
@@ -4986,7 +5777,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     }
 
     private boolean isReplaceableForFluid(byte block) {
-        return Blocks.isReplaceable(block);
+        return Blocks.isReplaceable(block) || block == GameConfig.CACTUS;
     }
 
     private boolean isReplaceableForFallingBlock(byte block) {
@@ -5179,8 +5970,9 @@ final class VoxelWorld implements StructureTemplates.Target {
             return;
         }
 
-        if (regionStorage != null) {
-            backgroundSaveService.enqueue(regionStorage, snapshotColumnForSave(column));
+        RegionStorage storage = storageForColumn(column.chunkX, column.chunkZ);
+        if (storage != null) {
+            backgroundSaveService.enqueue(storage, snapshotColumnForSave(column));
             column.dirty = false;
             return;
         }

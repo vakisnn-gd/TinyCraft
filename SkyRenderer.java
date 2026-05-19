@@ -93,11 +93,11 @@ final class SkyRenderer {
                     continue;
                 }
 
-                double centerX = cellX * GameConfig.CLOUD_CELL_SIZE - cloudDriftOffset + (hash01(cellX, cellZ, 17) - 0.5) * 18.0 - renderCameraX;
-                double centerZ = cellZ * GameConfig.CLOUD_CELL_SIZE + (hash01(cellX, cellZ, 23) - 0.5) * 18.0 - renderCameraZ;
+                double centerX = cellX * GameConfig.CLOUD_CELL_SIZE - cloudDriftOffset + (hash01(cellX, cellZ, 17) - 0.5) * 4.0 - renderCameraX;
+                double centerZ = cellZ * GameConfig.CLOUD_CELL_SIZE + (hash01(cellX, cellZ, 23) - 0.5) * 4.0 - renderCameraZ;
                 double centerY = GameConfig.CLOUD_LAYER_BASE_HEIGHT + hash01(cellX, cellZ, 29) * 5.0 - renderCameraY;
-                double width = 30.0 + hash01(cellX, cellZ, 31) * 30.0;
-                double depth = 20.0 + hash01(cellX, cellZ, 37) * 24.0;
+                double width = 18.0 + hash01(cellX, cellZ, 31) * 10.0;
+                double depth = 12.0 + hash01(cellX, cellZ, 37) * 8.0;
                 double thickness = 2.4 + hash01(cellX, cellZ, 41) * 2.4;
 
                 renderCloudPuff(
@@ -112,15 +112,15 @@ final class SkyRenderer {
                 );
 
                 if (density > 0.72) {
-                    double offsetX = (hash01(cellX, cellZ, 43) - 0.5) * 18.0;
-                    double offsetZ = (hash01(cellX, cellZ, 47) - 0.5) * 18.0;
+                    double offsetX = (hash01(cellX, cellZ, 43) - 0.5) * width * 0.24;
+                    double offsetZ = (hash01(cellX, cellZ, 47) - 0.5) * depth * 0.24;
                     renderCloudPuff(
-                        centerX - width * 0.45 + offsetX,
+                        centerX - width * 0.30 + offsetX,
                         centerY + 0.3,
-                        centerZ - depth * 0.40 + offsetZ,
-                        centerX + width * 0.45 + offsetX,
+                        centerZ - depth * 0.28 + offsetZ,
+                        centerX + width * 0.30 + offsetX,
                         centerY + thickness + 0.5,
-                        centerZ + depth * 0.40 + offsetZ,
+                        centerZ + depth * 0.28 + offsetZ,
                         daylightFactor,
                         alpha * 0.86f
                     );

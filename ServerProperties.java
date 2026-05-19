@@ -15,9 +15,10 @@ final class ServerProperties {
     String seed = "";
     String terrain = "default";
     int maxPlayers = 8;
-    String motd = "TinyCraft Snapshot 8 Server";
+    String motd = "TinyCraft Snapshot 9 Server";
     boolean allowPvp = true;
     boolean allowCheats = false;
+    boolean whitelist = false;
     int viewDistance = 8;
 
     private final Path path;
@@ -67,6 +68,8 @@ final class ServerProperties {
                 allowPvp = Boolean.parseBoolean(value);
             } else if ("--allowCheats".equals(arg) || "--cheats".equals(arg)) {
                 allowCheats = Boolean.parseBoolean(value);
+            } else if ("--whitelist".equals(arg) || "--white-list".equals(arg)) {
+                whitelist = Boolean.parseBoolean(value);
             } else if ("--viewDistance".equals(arg) || "--view-distance".equals(arg)) {
                 viewDistance = clamp(parseInt(value, viewDistance), GameConfig.MIN_RENDER_DISTANCE, GameConfig.MAX_RENDER_DISTANCE_CHUNKS);
             }
@@ -99,6 +102,7 @@ final class ServerProperties {
         System.out.println("  maxPlayers=" + maxPlayers);
         System.out.println("  allowPvp=" + allowPvp);
         System.out.println("  allowCheats=" + allowCheats);
+        System.out.println("  whitelist=" + whitelist);
         System.out.println("  viewDistance=" + viewDistance);
     }
 
@@ -115,10 +119,11 @@ final class ServerProperties {
         motd = properties.getProperty("motd", motd);
         allowPvp = Boolean.parseBoolean(properties.getProperty("allowPvp", Boolean.toString(allowPvp)));
         allowCheats = Boolean.parseBoolean(properties.getProperty("allowCheats", Boolean.toString(allowCheats)));
+        whitelist = Boolean.parseBoolean(properties.getProperty("whitelist", Boolean.toString(whitelist)));
         viewDistance = clamp(parseInt(properties.getProperty("viewDistance"), viewDistance), GameConfig.MIN_RENDER_DISTANCE, GameConfig.MAX_RENDER_DISTANCE_CHUNKS);
     }
 
-    private void save() throws IOException {
+    void save() throws IOException {
         Properties properties = new Properties();
         properties.setProperty("port", Integer.toString(port));
         properties.setProperty("world", world);
@@ -128,6 +133,7 @@ final class ServerProperties {
         properties.setProperty("motd", motd);
         properties.setProperty("allowPvp", Boolean.toString(allowPvp));
         properties.setProperty("allowCheats", Boolean.toString(allowCheats));
+        properties.setProperty("whitelist", Boolean.toString(whitelist));
         properties.setProperty("viewDistance", Integer.toString(viewDistance));
         try (OutputStream output = Files.newOutputStream(path)) {
             properties.store(output, "TinyCraft dedicated server settings");

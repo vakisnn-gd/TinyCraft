@@ -130,11 +130,14 @@ final class BlockRegistry {
         register(GameConfig.COBBLESTONE_STAIRS, "minecraft:cobblestone_stairs", "Cobblestone Stairs", true, false, false, false, false, false, 0);
         register(GameConfig.GRAVEL, "minecraft:gravel", "Gravel", true, true, false, false, false, true, 0);
         register(GameConfig.SEAGRASS, "minecraft:seagrass", "Seagrass", false, false, false, true, true, false, 0);
+        register(GameConfig.KELP, "minecraft:kelp", "Kelp", false, false, false, true, true, false, 0);
         register(GameConfig.DEEPSLATE, "minecraft:deepslate", "Deepslate", true, true, false, false, false, false, 0);
         register(GameConfig.CLAY, "minecraft:clay", "Clay", true, true, false, false, false, false, 0);
         register(GameConfig.OAK_FENCE, "minecraft:oak_fence", "Oak Fence", true, false, false, false, false, false, 0);
         register(GameConfig.CHEST, "minecraft:chest", "Chest", true, true, false, false, false, false, 0);
         register(GameConfig.WHEAT_CROP, "minecraft:wheat", "Wheat", false, false, false, true, true, false, 0);
+        register(GameConfig.CARROT_CROP, "minecraft:carrots", "Carrots", false, false, false, true, true, false, 0);
+        register(GameConfig.POTATO_CROP, "minecraft:potatoes", "Potatoes", false, false, false, true, true, false, 0);
         register(GameConfig.RAIL, "minecraft:rail", "Rail", false, false, false, true, false, false, 0);
         register(GameConfig.OAK_DOOR, "minecraft:oak_door", "Oak Door", false, false, false, false, false, false, 0);
         register(GameConfig.FARMLAND, "minecraft:farmland", "Farmland", true, true, false, false, false, false, 0);
@@ -148,6 +151,7 @@ final class BlockRegistry {
         register(GameConfig.DEEPSLATE_COAL_ORE, "minecraft:deepslate_coal_ore", "Deepslate Coal Ore", true, true, false, false, false, false, 0);
         register(GameConfig.RED_BED, "minecraft:red_bed", "Red Bed", true, false, false, false, false, false, 0);
         register(GameConfig.OAK_FENCE_GATE, "minecraft:oak_fence_gate", "Oak Fence Gate", true, false, false, false, false, false, 0);
+        register(GameConfig.PARADISE_PORTAL, "tiny:paradise_portal", "Paradise Portal", false, false, false, false, false, false, 12);
     }
 
     private BlockRegistry() {

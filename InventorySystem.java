@@ -1,3 +1,6 @@
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 
 final class InventoryItems {
@@ -52,6 +55,12 @@ final class InventoryItems {
     static final byte COOKED_BEEF = 101;
     static final byte COOKED_MUTTON = 102;
     static final byte BAKED_POTATO = 103;
+    static final byte RAW_HERRING = (byte) 132;
+    static final byte RAW_SALMON = (byte) 133;
+    static final byte COOKED_HERRING = (byte) 134;
+    static final byte COOKED_SALMON = (byte) 135;
+    static final byte HERRING_SPAWN_EGG = (byte) 136;
+    static final byte SALMON_SPAWN_EGG = (byte) 137;
     static final byte DIAMOND_HELMET = 104;
     static final byte DIAMOND_CHESTPLATE = 105;
     static final byte DIAMOND_LEGGINGS = 106;
@@ -99,6 +108,7 @@ final class InventoryItems {
         GameConfig.SNOW_BLOCK,
         GameConfig.SNOW_LAYER,
         GameConfig.SEAGRASS,
+        GameConfig.KELP,
         GameConfig.TALL_GRASS,
         GameConfig.RED_FLOWER,
         GameConfig.YELLOW_FLOWER,
@@ -119,6 +129,7 @@ final class InventoryItems {
         GameConfig.CRAFTING_TABLE,
         GameConfig.FURNACE,
         GameConfig.GLASS,
+        GameConfig.PARADISE_PORTAL,
         GameConfig.RED_BED,
         GameConfig.WHEAT_CROP,
         GameConfig.RAIL,
@@ -182,12 +193,18 @@ final class InventoryItems {
         SHEEP_SPAWN_EGG,
         COW_SPAWN_EGG,
         VILLAGER_SPAWN_EGG,
+        HERRING_SPAWN_EGG,
+        SALMON_SPAWN_EGG,
         RAW_PORK,
         RAW_BEEF,
         RAW_MUTTON,
+        RAW_HERRING,
+        RAW_SALMON,
         COOKED_PORK,
         COOKED_BEEF,
         COOKED_MUTTON,
+        COOKED_HERRING,
+        COOKED_SALMON,
         BAKED_POTATO,
         LEATHER,
         WOOL,
@@ -230,6 +247,7 @@ final class InventoryItems {
                 GameConfig.CRAFTING_TABLE,
                 GameConfig.FURNACE,
                 GameConfig.GLASS,
+                GameConfig.PARADISE_PORTAL,
                 GameConfig.RED_BED,
                 GameConfig.RAIL,
                 GameConfig.OAK_DOOR,
@@ -254,6 +272,7 @@ final class InventoryItems {
                 GameConfig.SNOW_BLOCK,
                 GameConfig.SNOW_LAYER,
                 GameConfig.SEAGRASS,
+                GameConfig.KELP,
                 GameConfig.TALL_GRASS,
                 GameConfig.RED_FLOWER,
                 GameConfig.YELLOW_FLOWER,
@@ -267,9 +286,13 @@ final class InventoryItems {
                 InventoryItems.RAW_PORK,
                 InventoryItems.RAW_BEEF,
                 InventoryItems.RAW_MUTTON,
+                InventoryItems.RAW_HERRING,
+                InventoryItems.RAW_SALMON,
                 InventoryItems.COOKED_PORK,
                 InventoryItems.COOKED_BEEF,
                 InventoryItems.COOKED_MUTTON,
+                InventoryItems.COOKED_HERRING,
+                InventoryItems.COOKED_SALMON,
                 InventoryItems.BAKED_POTATO,
                 InventoryItems.LEATHER,
                 InventoryItems.WOOL,
@@ -280,7 +303,9 @@ final class InventoryItems {
                 InventoryItems.PIG_SPAWN_EGG,
                 InventoryItems.SHEEP_SPAWN_EGG,
                 InventoryItems.COW_SPAWN_EGG,
-                InventoryItems.VILLAGER_SPAWN_EGG
+                InventoryItems.VILLAGER_SPAWN_EGG,
+                InventoryItems.HERRING_SPAWN_EGG,
+                InventoryItems.SALMON_SPAWN_EGG
             ),
             indicesFor(
                 InventoryItems.WOODEN_PICKAXE,
@@ -425,6 +450,8 @@ final class InventoryItems {
                 return "Snow Layer";
             case GameConfig.SEAGRASS:
                 return "Seagrass";
+            case GameConfig.KELP:
+                return "Kelp";
             case GameConfig.TALL_GRASS:
                 return "Tall Grass";
             case GameConfig.RED_FLOWER:
@@ -467,6 +494,10 @@ final class InventoryItems {
                 return "Glass";
             case GameConfig.WHEAT_CROP:
                 return "Wheat";
+            case GameConfig.CARROT_CROP:
+                return "Carrots";
+            case GameConfig.POTATO_CROP:
+                return "Potatoes";
             case GameConfig.RAIL:
                 return "Rail";
             case GameConfig.OAK_DOOR:
@@ -489,6 +520,14 @@ final class InventoryItems {
                 return "Carrot";
             case WHEAT_SEEDS:
                 return "Seeds";
+            case RAW_HERRING:
+                return "Raw Herring";
+            case RAW_SALMON:
+                return "Raw Salmon";
+            case COOKED_HERRING:
+                return "Cooked Herring";
+            case COOKED_SALMON:
+                return "Cooked Salmon";
             case COAL_ITEM:
                 return "Coal";
             case DIAMOND_ITEM:
@@ -619,6 +658,33 @@ final class InventoryItems {
     }
 
     private static String russianName(byte itemId) {
+        if (itemId == GameConfig.KELP) {
+            return "\u041b\u0430\u043c\u0438\u043d\u0430\u0440\u0438\u044f";
+        }
+        if (itemId == GameConfig.CARROT_CROP) {
+            return "\u041c\u043e\u0440\u043a\u043e\u0432\u044c";
+        }
+        if (itemId == GameConfig.POTATO_CROP) {
+            return "\u041a\u0430\u0440\u0442\u043e\u0444\u0435\u043b\u044c";
+        }
+        if (itemId == RAW_HERRING) {
+            return "\u0421\u044b\u0440\u0430\u044f \u0441\u0435\u043b\u0435\u0434\u043a\u0430";
+        }
+        if (itemId == RAW_SALMON) {
+            return "\u0421\u044b\u0440\u043e\u0439 \u043b\u043e\u0441\u043e\u0441\u044c";
+        }
+        if (itemId == COOKED_HERRING) {
+            return "\u0416\u0430\u0440\u0435\u043d\u0430\u044f \u0441\u0435\u043b\u0435\u0434\u043a\u0430";
+        }
+        if (itemId == COOKED_SALMON) {
+            return "\u0416\u0430\u0440\u0435\u043d\u044b\u0439 \u043b\u043e\u0441\u043e\u0441\u044c";
+        }
+        if (itemId == HERRING_SPAWN_EGG) {
+            return "\u042f\u0439\u0446\u043e \u043f\u0440\u0438\u0437\u044b\u0432\u0430 \u0441\u0435\u043b\u0435\u0434\u043a\u0438";
+        }
+        if (itemId == SALMON_SPAWN_EGG) {
+            return "\u042f\u0439\u0446\u043e \u043f\u0440\u0438\u0437\u044b\u0432\u0430 \u043b\u043e\u0441\u043e\u0441\u044f";
+        }
         switch (itemId) {
             case GameConfig.GRASS: return "Блок травы";
             case GameConfig.DIRT: return "Земля";
@@ -748,9 +814,20 @@ final class InventoryItems {
     }
 
     static boolean isPlaceable(byte itemId) {
-        return itemId == ITEM_WATER_BUCKET
+        return itemId == WHEAT_SEEDS
+            || itemId == CARROT
+            || itemId == POTATO
+            || itemId == ITEM_WATER_BUCKET
             || itemId == ITEM_LAVA_BUCKET
-            || (Blocks.isKnownLegacyId(itemId) && !Blocks.typeFromLegacyId(itemId).isAir());
+            || (Blocks.isKnownLegacyId(itemId)
+                && !Blocks.typeFromLegacyId(itemId).isAir()
+                && !isCropBlock(itemId));
+    }
+
+    static boolean isCropBlock(byte itemId) {
+        return itemId == GameConfig.WHEAT_CROP
+            || itemId == GameConfig.CARROT_CROP
+            || itemId == GameConfig.POTATO_CROP;
     }
 
     static boolean isCollectible(byte itemId) {
@@ -758,7 +835,7 @@ final class InventoryItems {
             && itemId != GameConfig.BEDROCK
             && itemId != GameConfig.WATER
             && itemId != GameConfig.LAVA
-            && !Blocks.isLiquid(itemId);
+            && (!Blocks.isLiquid(itemId) || itemId == GameConfig.SEAGRASS || itemId == GameConfig.KELP);
     }
 
     static int maxStackSize(byte itemId) {
@@ -927,6 +1004,10 @@ final class InventoryItems {
                 return MobKind.COW;
             case VILLAGER_SPAWN_EGG:
                 return MobKind.VILLAGER;
+            case HERRING_SPAWN_EGG:
+                return MobKind.HERRING;
+            case SALMON_SPAWN_EGG:
+                return MobKind.SALMON;
             default:
                 return null;
         }
@@ -943,11 +1024,15 @@ final class InventoryItems {
             case RAW_PORK:
             case RAW_BEEF:
             case RAW_MUTTON:
+            case RAW_HERRING:
+            case RAW_SALMON:
                 return 3;
             case COOKED_PORK:
             case COOKED_BEEF:
                 return 8;
             case COOKED_MUTTON:
+            case COOKED_HERRING:
+            case COOKED_SALMON:
                 return 6;
             case BAKED_POTATO:
                 return 5;
@@ -1084,6 +1169,8 @@ final class CraftingRecipe {
 }
 
 final class CraftingRecipes {
+    private static final byte ANY_PLANKS = (byte) 0xF1;
+
     private static final CraftingRecipe[] RECIPES = {
         CraftingRecipe.shapeless(InventoryItems.OAK_PLANKS, 4, GameConfig.OAK_LOG),
         CraftingRecipe.shapeless(GameConfig.PINE_PLANKS, 4, GameConfig.PINE_LOG),
@@ -1113,12 +1200,12 @@ final class CraftingRecipes {
             GameConfig.COBBLESTONE, GameConfig.AIR, GameConfig.AIR,
             GameConfig.COBBLESTONE, GameConfig.COBBLESTONE, GameConfig.COBBLESTONE),
         CraftingRecipe.shaped(2, 2, GameConfig.CRAFTING_TABLE, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS),
+            ANY_PLANKS, ANY_PLANKS,
+            ANY_PLANKS, ANY_PLANKS),
         CraftingRecipe.shaped(3, 3, GameConfig.CHEST, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, GameConfig.AIR, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS),
+            ANY_PLANKS, ANY_PLANKS, ANY_PLANKS,
+            ANY_PLANKS, GameConfig.AIR, ANY_PLANKS,
+            ANY_PLANKS, ANY_PLANKS, ANY_PLANKS),
         CraftingRecipe.shaped(3, 3, GameConfig.FURNACE, 1,
             GameConfig.COBBLESTONE, GameConfig.COBBLESTONE, GameConfig.COBBLESTONE,
             GameConfig.COBBLESTONE, GameConfig.AIR, GameConfig.COBBLESTONE,
@@ -1131,9 +1218,9 @@ final class CraftingRecipes {
         CraftingRecipe.shapeless(InventoryItems.DIAMOND_ITEM, 1, GameConfig.DIAMOND_ORE),
         CraftingRecipe.shapeless(InventoryItems.DIAMOND_ITEM, 1, GameConfig.DEEPSLATE_DIAMOND_ORE),
         CraftingRecipe.shaped(2, 3, GameConfig.OAK_DOOR, 3,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS),
+            ANY_PLANKS, ANY_PLANKS,
+            ANY_PLANKS, ANY_PLANKS,
+            ANY_PLANKS, ANY_PLANKS),
         CraftingRecipe.shaped(3, 3, GameConfig.RAIL, 16,
             InventoryItems.IRON_INGOT, GameConfig.AIR, InventoryItems.IRON_INGOT,
             InventoryItems.IRON_INGOT, InventoryItems.STICK, InventoryItems.IRON_INGOT,
@@ -1141,31 +1228,31 @@ final class CraftingRecipes {
         CraftingRecipe.shaped(3, 1, InventoryItems.BREAD, 1,
             GameConfig.WHEAT_CROP, GameConfig.WHEAT_CROP, GameConfig.WHEAT_CROP),
         CraftingRecipe.shaped(3, 2, GameConfig.OAK_FENCE, 6,
-            InventoryItems.OAK_PLANKS, InventoryItems.STICK, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.STICK, InventoryItems.OAK_PLANKS),
+            ANY_PLANKS, InventoryItems.STICK, ANY_PLANKS,
+            ANY_PLANKS, InventoryItems.STICK, ANY_PLANKS),
         CraftingRecipe.shaped(3, 2, GameConfig.OAK_FENCE_GATE, 1,
-            InventoryItems.STICK, InventoryItems.OAK_PLANKS, InventoryItems.STICK,
-            InventoryItems.STICK, InventoryItems.OAK_PLANKS, InventoryItems.STICK),
+            InventoryItems.STICK, ANY_PLANKS, InventoryItems.STICK,
+            InventoryItems.STICK, ANY_PLANKS, InventoryItems.STICK),
         CraftingRecipe.shapeless(GameConfig.GRAVEL, 1, GameConfig.COBBLESTONE, GameConfig.DIRT),
         CraftingRecipe.shapeless(GameConfig.CLAY, 1, GameConfig.SAND, GameConfig.DIRT),
         CraftingRecipe.shaped(3, 3, InventoryItems.WOODEN_PICKAXE, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
+            ANY_PLANKS, ANY_PLANKS, ANY_PLANKS,
             GameConfig.AIR, InventoryItems.STICK, GameConfig.AIR,
             GameConfig.AIR, InventoryItems.STICK, GameConfig.AIR),
         CraftingRecipe.shaped(1, 3, InventoryItems.WOODEN_SWORD, 1,
-            InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS,
+            ANY_PLANKS,
+            ANY_PLANKS,
             InventoryItems.STICK),
         CraftingRecipe.shaped(2, 3, InventoryItems.WOODEN_AXE, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.STICK,
+            ANY_PLANKS, ANY_PLANKS,
+            ANY_PLANKS, InventoryItems.STICK,
             GameConfig.AIR, InventoryItems.STICK),
         CraftingRecipe.shaped(1, 3, InventoryItems.WOODEN_SHOVEL, 1,
-            InventoryItems.OAK_PLANKS,
+            ANY_PLANKS,
             InventoryItems.STICK,
             InventoryItems.STICK),
         CraftingRecipe.shaped(2, 2, InventoryItems.WOODEN_HOE, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
+            ANY_PLANKS, ANY_PLANKS,
             GameConfig.AIR, InventoryItems.STICK),
         CraftingRecipe.shaped(3, 3, InventoryItems.STONE_PICKAXE, 1,
             GameConfig.COBBLESTONE, GameConfig.COBBLESTONE, GameConfig.COBBLESTONE,
@@ -1209,12 +1296,12 @@ final class CraftingRecipes {
             InventoryItems.IRON_INGOT, GameConfig.AIR, InventoryItems.IRON_INGOT,
             GameConfig.AIR, InventoryItems.IRON_INGOT, GameConfig.AIR),
         CraftingRecipe.shaped(3, 3, InventoryItems.SHIELD, 1,
-            InventoryItems.OAK_PLANKS, InventoryItems.IRON_INGOT, InventoryItems.OAK_PLANKS,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS,
-            GameConfig.AIR, InventoryItems.OAK_PLANKS, GameConfig.AIR),
+            ANY_PLANKS, InventoryItems.IRON_INGOT, ANY_PLANKS,
+            ANY_PLANKS, ANY_PLANKS, ANY_PLANKS,
+            GameConfig.AIR, ANY_PLANKS, GameConfig.AIR),
         CraftingRecipe.shaped(3, 2, GameConfig.RED_BED, 1,
             InventoryItems.WOOL, InventoryItems.WOOL, InventoryItems.WOOL,
-            InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS, InventoryItems.OAK_PLANKS),
+            ANY_PLANKS, ANY_PLANKS, ANY_PLANKS),
         CraftingRecipe.shaped(3, 2, InventoryItems.DIAMOND_PICKAXE, 1,
             InventoryItems.DIAMOND_ITEM, InventoryItems.DIAMOND_ITEM, InventoryItems.DIAMOND_ITEM,
             GameConfig.AIR, InventoryItems.STICK, GameConfig.AIR),
@@ -1321,7 +1408,7 @@ final class CraftingRecipes {
                         ? GameConfig.AIR
                         : craftGrid[(minY + y) * gridWidth + (minX + x)].itemId;
                     byte expected = recipe.pattern[y * recipe.width + x];
-                    if (actual != expected) {
+                    if (!matchesIngredient(expected, actual)) {
                         matches = false;
                         break;
                     }
@@ -1354,7 +1441,7 @@ final class CraftingRecipes {
             for (byte expected : recipe.shapelessIngredients) {
                 boolean found = false;
                 for (int i = 0; i < actualCount; i++) {
-                    if (!used[i] && actual[i] == expected) {
+                    if (!used[i] && matchesIngredient(expected, actual[i])) {
                         used[i] = true;
                         found = true;
                         break;
@@ -1370,6 +1457,15 @@ final class CraftingRecipes {
             }
         }
         return null;
+    }
+
+    private static boolean matchesIngredient(byte expected, byte actual) {
+        if (expected == ANY_PLANKS) {
+            return actual == InventoryItems.OAK_PLANKS
+                || actual == GameConfig.PINE_PLANKS
+                || actual == GameConfig.BIRCH_PLANKS;
+        }
+        return actual == expected;
     }
 }
 
@@ -1396,6 +1492,8 @@ final class FurnaceRecipes {
         new FurnaceRecipe(InventoryItems.RAW_PORK, InventoryItems.COOKED_PORK, 1, 5.0),
         new FurnaceRecipe(InventoryItems.RAW_BEEF, InventoryItems.COOKED_BEEF, 1, 5.0),
         new FurnaceRecipe(InventoryItems.RAW_MUTTON, InventoryItems.COOKED_MUTTON, 1, 5.0),
+        new FurnaceRecipe(InventoryItems.RAW_HERRING, InventoryItems.COOKED_HERRING, 1, 4.0),
+        new FurnaceRecipe(InventoryItems.RAW_SALMON, InventoryItems.COOKED_SALMON, 1, 4.0),
         new FurnaceRecipe(InventoryItems.POTATO, InventoryItems.BAKED_POTATO, 1, 4.0)
     };
 
@@ -1440,6 +1538,34 @@ final class ContainerInventory {
 
     ItemStack getStack(int index) {
         return slots[index];
+    }
+
+    void writeTo(DataOutputStream output) throws IOException {
+        output.writeInt(slots.length);
+        for (ItemStack stack : slots) {
+            InventoryCodecs.writeStack(output, stack);
+        }
+    }
+
+    static ContainerInventory readFrom(DataInputStream input, int maxSlots) throws IOException {
+        int size = input.readInt();
+        if (size < 0 || size > maxSlots) {
+            throw new IOException("invalid container size: " + size);
+        }
+        ContainerInventory container = new ContainerInventory(size);
+        for (ItemStack stack : container.slots) {
+            InventoryCodecs.readStack(input, stack);
+        }
+        return container;
+    }
+
+    void copyFrom(ContainerInventory source) {
+        if (source == null || source.slots.length != slots.length) {
+            return;
+        }
+        for (int i = 0; i < slots.length; i++) {
+            slots[i].copyFrom(source.slots[i]);
+        }
     }
 }
 
@@ -1499,6 +1625,39 @@ final class FurnaceBlockEntity {
         }
         return output.itemId == recipe.output
             && output.count + recipe.outputCount <= InventoryItems.maxStackSize(recipe.output);
+    }
+
+    void writeTo(DataOutputStream outputStream) throws IOException {
+        InventoryCodecs.writeStack(outputStream, input);
+        InventoryCodecs.writeStack(outputStream, fuel);
+        InventoryCodecs.writeStack(outputStream, output);
+        outputStream.writeDouble(burnRemaining);
+        outputStream.writeDouble(burnTotal);
+        outputStream.writeDouble(cookProgress);
+        outputStream.writeDouble(cookTotal);
+    }
+
+    void readFrom(DataInputStream inputStream) throws IOException {
+        InventoryCodecs.readStack(inputStream, input);
+        InventoryCodecs.readStack(inputStream, fuel);
+        InventoryCodecs.readStack(inputStream, output);
+        burnRemaining = inputStream.readDouble();
+        burnTotal = inputStream.readDouble();
+        cookProgress = inputStream.readDouble();
+        cookTotal = inputStream.readDouble();
+    }
+
+    void copyFrom(FurnaceBlockEntity source) {
+        if (source == null) {
+            return;
+        }
+        input.copyFrom(source.input);
+        fuel.copyFrom(source.fuel);
+        output.copyFrom(source.output);
+        burnRemaining = source.burnRemaining;
+        burnTotal = source.burnTotal;
+        cookProgress = source.cookProgress;
+        cookTotal = source.cookTotal;
     }
 }
 
@@ -1650,6 +1809,47 @@ final class PlayerInventory {
         clearSlots(workbenchGrid);
         offhand.clear();
         cursor.clear();
+        craftResult.clear();
+        workbenchResult.clear();
+        markCraftDirty();
+        markWorkbenchCraftDirty();
+    }
+
+    void writeTo(DataOutputStream output) throws IOException {
+        writeSlots(output, hotbar);
+        writeSlots(output, storage);
+        writeSlots(output, armor);
+        writeSlots(output, craftGrid);
+        writeSlots(output, workbenchGrid);
+        InventoryCodecs.writeStack(output, offhand);
+        InventoryCodecs.writeStack(output, cursor);
+    }
+
+    void readFrom(DataInputStream input) throws IOException {
+        readSlots(input, hotbar, HOTBAR_SIZE);
+        readSlots(input, storage, STORAGE_SIZE);
+        readSlots(input, armor, ARMOR_SIZE);
+        readSlots(input, craftGrid, CRAFT_SIZE);
+        readSlots(input, workbenchGrid, WORKBENCH_CRAFT_SIZE);
+        InventoryCodecs.readStack(input, offhand);
+        InventoryCodecs.readStack(input, cursor);
+        craftResult.clear();
+        workbenchResult.clear();
+        markCraftDirty();
+        markWorkbenchCraftDirty();
+    }
+
+    void copyFrom(PlayerInventory source) {
+        if (source == null) {
+            return;
+        }
+        copySlots(hotbar, source.hotbar);
+        copySlots(storage, source.storage);
+        copySlots(armor, source.armor);
+        copySlots(craftGrid, source.craftGrid);
+        copySlots(workbenchGrid, source.workbenchGrid);
+        offhand.copyFrom(source.offhand);
+        cursor.copyFrom(source.cursor);
         craftResult.clear();
         workbenchResult.clear();
         markCraftDirty();
@@ -2249,6 +2449,63 @@ final class PlayerInventory {
     private void clearSlots(ItemStack[] slots) {
         for (ItemStack slot : slots) {
             slot.clear();
+        }
+    }
+
+    private void writeSlots(DataOutputStream output, ItemStack[] slots) throws IOException {
+        output.writeInt(slots.length);
+        for (ItemStack stack : slots) {
+            InventoryCodecs.writeStack(output, stack);
+        }
+    }
+
+    private void readSlots(DataInputStream input, ItemStack[] slots, int expectedSize) throws IOException {
+        int size = input.readInt();
+        if (size != expectedSize) {
+            throw new IOException("invalid inventory section size: " + size);
+        }
+        for (ItemStack stack : slots) {
+            InventoryCodecs.readStack(input, stack);
+        }
+    }
+
+    private void copySlots(ItemStack[] target, ItemStack[] source) {
+        for (int i = 0; i < target.length && i < source.length; i++) {
+            target[i].copyFrom(source[i]);
+        }
+    }
+}
+
+final class InventoryCodecs {
+    private InventoryCodecs() {
+    }
+
+    static void writeStack(DataOutputStream output, ItemStack stack) throws IOException {
+        if (stack == null || stack.isEmpty()) {
+            output.writeByte(GameConfig.AIR);
+            output.writeInt(0);
+            output.writeInt(0);
+            return;
+        }
+        output.writeByte(stack.itemId);
+        output.writeInt(stack.count);
+        output.writeInt(stack.durabilityDamage);
+    }
+
+    static void readStack(DataInputStream input, ItemStack stack) throws IOException {
+        byte itemId = input.readByte();
+        int count = input.readInt();
+        int durabilityDamage = input.readInt();
+        if (itemId == GameConfig.AIR || count <= 0) {
+            stack.clear();
+            return;
+        }
+        int maxStack = InventoryItems.maxStackSize(itemId);
+        stack.set(itemId, Math.max(1, Math.min(count, maxStack)));
+        if (InventoryItems.isDurableItem(itemId)) {
+            stack.durabilityDamage = Math.max(0, Math.min(durabilityDamage, InventoryItems.maxDurability(itemId) - 1));
+        } else {
+            stack.durabilityDamage = 0;
         }
     }
 }

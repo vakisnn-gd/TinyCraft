@@ -8,6 +8,9 @@ saves/
 options.txt
 profile.properties
 server.properties
+ops.json
+whitelist.json
+banned-players.json
 
 # Generated runtime assets
 terrain.png

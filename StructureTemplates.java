@@ -134,10 +134,23 @@ final class StructureTemplates {
                     set(target, ox, oy, oz, x, 0, z, rot, GameConfig.WATER_SOURCE);
                 } else {
                     set(target, ox, oy, oz, x, 0, z, rot, GameConfig.FARMLAND);
-                    set(target, ox, oy, oz, x, 1, z, rot, GameConfig.WHEAT_CROP);
+                    byte crop = farmCropFor(ox, oz, x, z);
+                    int stage = 4 + Math.floorMod(ox * 31 + oz * 17 + x * 7 + z * 11, 4);
+                    set(target, ox, oy, oz, x, 1, z, rot, Blocks.withData(crop, stage));
                 }
             }
         }
+    }
+
+    private static byte farmCropFor(int ox, int oz, int x, int z) {
+        int roll = Math.floorMod(ox * 13 + oz * 19 + x * 5 + z * 3, 3);
+        if (roll == 1) {
+            return GameConfig.CARROT_CROP;
+        }
+        if (roll == 2) {
+            return GameConfig.POTATO_CROP;
+        }
+        return GameConfig.WHEAT_CROP;
     }
 
     private static void placePlaza(Target target, int ox, int oy, int oz, int rot) {
@@ -149,11 +162,28 @@ final class StructureTemplates {
                 }
             }
         }
-        set(target, ox, oy, oz, 3, 1, 3, rot, GameConfig.OAK_FENCE);
-        set(target, ox, oy, oz, 3, 2, 3, rot, GameConfig.OAK_FENCE);
-        set(target, ox, oy, oz, 3, 3, 3, rot, GameConfig.OAK_FENCE);
-        set(target, ox, oy, oz, 3, 4, 3, rot, InventoryItems.OAK_PLANKS);
-        set(target, ox, oy, oz, 3, 5, 3, rot, GameConfig.TORCH);
+        for (int x = 2; x <= 4; x++) {
+            for (int z = 2; z <= 4; z++) {
+                set(target, ox, oy, oz, x, 0, z, rot, x == 3 && z == 3 ? GameConfig.WATER_SOURCE : GameConfig.COBBLESTONE);
+            }
+        }
+        set(target, ox, oy, oz, 2, 1, 2, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 4, 1, 2, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 2, 1, 4, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 4, 1, 4, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 2, 2, 2, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 4, 2, 2, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 2, 2, 4, rot, GameConfig.OAK_FENCE);
+        set(target, ox, oy, oz, 4, 2, 4, rot, GameConfig.OAK_FENCE);
+        byte roof = rot % 3 == 1 ? GameConfig.BIRCH_PLANKS : (rot % 3 == 2 ? GameConfig.PINE_PLANKS : InventoryItems.OAK_PLANKS);
+        for (int x = 1; x <= 5; x++) {
+            for (int z = 1; z <= 5; z++) {
+                if (Math.abs(x - 3) + Math.abs(z - 3) <= 3) {
+                    set(target, ox, oy, oz, x, 3, z, rot, roof);
+                }
+            }
+        }
+        set(target, ox, oy, oz, 3, 4, 3, rot, GameConfig.TORCH);
     }
 
     private static void placePathSegment(Target target, int ox, int oy, int oz, int length, int rot) {

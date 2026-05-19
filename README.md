@@ -1,8 +1,10 @@
 # TinyCraft
 
-TinyCraft - небольшая Java/LWJGL voxel-песочница в стиле Minecraft. В игре есть чанковый мир, биомы, горы, пещеры, шахты, деревни, мобы, инвентарь, крафт, печки, сундуки, жидкости, команды, LAN-мультиплеер и первый dedicated server.
+TinyCraft - небольшая Java/LWJGL voxel-песочница. В игре есть чанковый мир, биомы, горы, пещеры, шахты, деревни, мобы, инвентарь, крафт, печки, сундуки, жидкости, команды, LAN-мультиплеер и dedicated server.
 
-Текущая версия документации: `v0.2 Snapshot 8`.
+Текущая версия документации: `v0.2 Final`.
+
+`v0.2 Final` - последний релиз TinyCraft. Разработка проекта завершена; репозиторий оставлен как учебный/экспериментальный Java/LWJGL Minecraft-like проект.
 
 ## Скриншоты
 
@@ -20,6 +22,8 @@ TinyCraft - небольшая Java/LWJGL voxel-песочница в стиле
 
 Требуется Java 8 или новее. Проект собирается с `--release 8`, поэтому совместим с Java 8 runtime, но запускать его можно и на более свежем JDK.
 
+Готовый клиентский zip `v0.2 Final` рассчитан на Windows: в `lib/` сейчас лежат только Windows LWJGL natives. Для Linux/macOS нужны соответствующие LWJGL native jars и отдельные launch scripts. Headless dedicated server не использует OpenGL, но все равно требует Java 8+.
+
 ```powershell
 javac -encoding UTF-8 --release 8 -cp "lib/*" -d out *.java
 java -cp "out;lib/*" TinyCraft
@@ -33,7 +37,7 @@ java -cp "out;lib/*" TinyCraft
 
 ## Dedicated Server
 
-Snapshot 8 добавляет первый headless dedicated server. Он запускает авторитетный `VoxelWorld`, слушает TCP на `0.0.0.0:25566`, принимает обычных клиентов TinyCraft и не создает окно, renderer, GLFW или аудио.
+`v0.2 Final` стабилизирует headless dedicated server. Он запускает авторитетный `VoxelWorld`, слушает TCP на `0.0.0.0:25566`, принимает обычных клиентов TinyCraft и не создает окно, renderer, GLFW или аудио.
 
 Запуск из исходников:
 
@@ -48,6 +52,14 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 .\run-server.bat
 ```
 
+Готовую Windows-папку и zip можно собрать одной командой:
+
+```powershell
+.\build-release.bat
+```
+
+Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
+
 При первом запуске рядом с проектом создается локальный `server.properties`. CLI-аргументы перекрывают значения из файла. Мир сервера хранится в `saves/<world>` и переиспользуется при следующих запусках с тем же `world`.
 
 Основные настройки:
@@ -58,7 +70,7 @@ world=server_world
 seed=
 terrain=default
 maxPlayers=8
-motd=TinyCraft Snapshot 8 Server
+motd=TinyCraft v0.2 Final Server
 allowPvp=true
 allowCheats=false
 viewDistance=8
@@ -76,17 +88,20 @@ viewDistance=8
 | `save` | Сохраняет мир и подключенных игроков. |
 | `stop` | Сохраняет мир и останавливает сервер. |
 
-## Возможности Snapshot 8
+## Возможности v0.2 Final
 
-- Dedicated server MVP без OpenGL-окна.
+- Dedicated server без OpenGL-окна.
 - Direct IP/LAN-подключение к integrated host или dedicated server.
 - Сервер авторитетен по чанкам, блокам, времени, мобам, дропу, чату, позициям игроков и PvP.
+- Server-side MVP для инвентаря, сундуков, печек и верстака через `INVENTORY_SYNC` и `CONTAINER_*` пакеты.
+- Базовая защита протокола: лимиты размеров пакетов, rate limit для частых действий и проверка дистанции `BLOCK_ACTION`.
 - Таблица игроков по Tab с ping, здоровьем и статусом.
-- Multiplayer-команды `/list`, `/ping`, `/msg`, `/kick`.
+- Multiplayer-команды `/list`, `/ping`, `/msg`, `/kick`, `/give`, `/clear`, `/gamemode`, `/tp`.
 - Синхронизация здоровья игрока, server-side атак мобов и PvP-урона.
 - Выдача подобранных предметов клиенту через серверный `INVENTORY_ADD`.
 - Более явные ошибки при несовместимом протоколе, duplicate UUID, заполненном сервере и timeout.
 - Сохранение server world и network player state между запусками dedicated server.
+- JUnit headless protocol tests без OpenGL.
 
 ## Возможности игры
 
@@ -118,6 +133,12 @@ viewDistance=8
 javac -encoding UTF-8 --release 8 -cp "lib/*" -d out *.java
 ```
 
+Headless protocol tests:
+
+```powershell
+.\run-tests.bat
+```
+
 Окно 1, сервер:
 
 ```powershell
@@ -147,7 +168,7 @@ java -cp "out;lib/*" TinyCraft
 - Транспорт: чистый TCP без сторонних сетевых библиотек.
 - Framing: `int length` + `byte packetId` + payload через `DataInputStream` и `DataOutputStream`.
 - `MAGIC = TCMP`.
-- `VERSION = 3` в Snapshot 8.
+- `VERSION = 7` в v0.2 Final.
 - Порт по умолчанию: `25566`.
 
 | ID | Пакет | Назначение |
@@ -174,6 +195,14 @@ java -cp "out;lib/*" TinyCraft
 | 20 | `COMMAND` | Multiplayer-команды клиента. |
 | 21 | `INVENTORY_ADD` | Серверная выдача подобранного item. |
 | 22 | `MOB_ATTACK` | Запрос атаки моба клиентом. |
+| 23 | `SERVER_PLAYER_STATE` | Серверная коррекция позиции, режима игры и здоровья клиента. |
+| 24 | `INVENTORY_SYNC` | Полное авторитетное состояние инвентаря игрока. |
+| 25 | `CONTAINER_OPEN_REQUEST` | Запрос клиента на открытие контейнера. |
+| 26 | `CONTAINER_OPEN` | Подтверждение открытия контейнера и начальный snapshot. |
+| 27 | `CONTAINER_CLICK` | Клик клиента по слоту активного server-side окна. |
+| 28 | `CONTAINER_CLOSE` | Закрытие активного server-side окна. |
+| 29 | `CONTAINER_UPDATE` | Обновление содержимого контейнера после принятого действия. |
+| 30 | `ITEM_DROP` | Запрос клиента на выбрасывание предмета из хотбара. |
 
 ## Управление
 
@@ -203,15 +232,14 @@ java -cp "out;lib/*" TinyCraft
 | `/ping` | Показывает текущий ping. |
 | `/msg <player> <message>` | Отправляет личное сообщение. |
 | `/kick <player> [reason]` | Отключает игрока, если команду выполняет host. |
-| `/tp <x> <y> <z>` | Телепортирует игрока. |
+| `/tp <player> <x> <y> <z>` | Телепортирует игрока на dedicated server; в singleplayer используется локальная форма без `<player>`. |
 | `/time set day` | Устанавливает день. |
 | `/time set night` | Устанавливает ночь. |
-| `/gamemode creative` | Включает творческий режим. |
-| `/gamemode survival` | Включает режим выживания. |
-| `/gamemode spectator` | Включает режим наблюдателя. |
-| `/clear` | Очищает инвентарь. |
+| `/gamemode <survival|creative|spectator> <player>` | Меняет режим игрока на dedicated server; в singleplayer используется локальная форма без `<player>`. |
+| `/clear <player>` | Очищает инвентарь игрока на dedicated server. |
 | `/say <сообщение>` | Выводит сообщение от сервера. |
-| `/give <id> <количество>` | Выдает предмет или блок по ID. |
+| `/give <id|tinycraft:name> <amount>` | Выдает предмет или блок себе из чата на dedicated server, если игрок op. |
+| `give <player> <id|tinycraft:name> <amount>` | Выдает предмет или блок игроку из server console. Пример: `give Player2873 dirt 64`. |
 | `/spawnzombie` | Спавнит зомби рядом с игроком. |
 | `/seed` | Показывает seed мира. |
 | `/locate village` | Ищет ближайшую деревню. |
