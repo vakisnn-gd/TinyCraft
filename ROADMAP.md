@@ -1,8 +1,8 @@
-# План разработки
+# Статус разработки
 
-Главное правило: сначала стабилизация, потом большие новые функции. Snapshot 9 закрепляет server authority MVP для dedicated server, inventory и контейнеров, но не обещает публичную серверную инфраструктуру.
+TinyCraft завершен на `v0.2 Final`. Этот файл оставлен как историческая карта того, что было доведено до финального состояния и что сознательно не было превращено в большой production-проект.
 
-## Цель v0.2 Snapshot 9
+## Цель v0.2 Final
 
 - Держать проект компилируемым на Java 8+.
 - Держать singleplayer запускаемым.
@@ -12,45 +12,20 @@
 - Синхронизировать основные gameplay-события: chunks, blocks, chat, players, mobs, drops, health, pickup, inventory и containers.
 - Валидировать базовые multiplayer-действия: размеры пакетов, частоту действий, дистанцию `BLOCK_ACTION`, совместимость протокола.
 - Честно не добавлять внешние аккаунты, relay, NAT traversal и публичную инфраструктуру.
+- Завершить проект финальным релизом без обещания следующих snapshot.
 
-## Сделано в Snapshot 9
+## Сделано к v0.2 Final
 
-- `MultiplayerProtocol.VERSION = 4`; клиенты Snapshot 8 отклоняются как несовместимые.
+- `MultiplayerProtocol.VERSION = 7`; старые клиенты отклоняются как несовместимые.
 - Добавлены `INVENTORY_SYNC` и `CONTAINER_*` пакеты.
 - Сундуки, печки и верстак открываются и меняются через server-side window id.
 - Клиентский mirror больше не применяет ломание/установку блоков до server `BLOCK_UPDATE`.
+- Добавлены отдельные измерения по `dimensionId`, включая Paradise.
+- Добавлены server-side gamemode, creative inventory, item drop и block breaking checks.
+- Добавлен экран disconnect с причиной отключения.
 - Добавлены JUnit headless tests и `run-tests.bat`.
 
-## Следующий проход стабилизации
-
-1. Server authority
-   - Расширить server-side модель на выбрасывание предметов из инвентаря, spawn eggs, buckets и еду.
-   - Уточнить permission model для `/give`, `/clear`, `/gamemode`, `/tp` и `allowCheats`.
-   - Добавить более подробные server rejection messages в отдельный UI/status слой.
-
-2. Containers
-   - Протестировать несколько клиентов, одновременно открывающих один сундук/печь.
-   - Добавить server-side drop cursor при disconnect/death.
-   - Полировать быстрые перемещения и визуальную обратную связь при отклоненном клике.
-
-3. Connection UX
-   - Добавить историю последних серверов.
-   - Добавить более подробный экран подключения.
-   - Показывать понятные ошибки для firewall, timeout, incompatible protocol и full server.
-   - Добавить reconnect после временного разрыва.
-
-4. Protocol hardening
-   - Расширить headless tests на real `MultiplayerManager` loopback-сценарии.
-   - Валидировать больше gameplay-пакетов против server inventory/state.
-   - Добавить опциональные debug logs для packet rejection.
-   - Не считать это полноценным anti-cheat для публичных серверов.
-
-5. Observability
-   - Добавить опциональные packet/debug логи.
-   - Показывать в debug overlay режим сети, ping, remote players и очередь чанков.
-   - Подготовить минимальные headless protocol tests без OpenGL.
-
-## Идеи для следующих snapshot
+## Что осталось как идеи, но не планируется
 
 - LAN discovery через broadcast.
 - Более подробный server connection screen.
@@ -61,7 +36,7 @@
 - Рецепт-книга и полировка inventory UI.
 - Больше звуков и texture pack.
 
-## Не планируется для ближайших snapshot
+## Не реализовано
 
 - Публичные аккаунты и авторизация.
 - Официальные публичные серверы.

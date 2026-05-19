@@ -1,5 +1,19 @@
 # История изменений
 
+## v0.2 Final
+
+Это последний релиз TinyCraft. Разработка проекта завершена; версия опубликована как финальная точка учебного/экспериментального Java/LWJGL Minecraft-like проекта.
+
+### Финальный проход после Snapshot 9
+
+- Paradise перенесен в отдельное измерение через `dimensionId`, без координатного offset.
+- Multiplayer стал серверно-авторитетным для gamemode, creative inventory, item drops, furnace/container updates и ломания блоков.
+- F3+F4 в multiplayer больше не меняет режим локально: смена проходит через серверную `/gamemode`.
+- Добавлены короткие команды `/gm`, `/gmc`, `/gms`, `/gmsp`.
+- Исправлен экран отключения: клиент показывает причину kick/disconnect.
+- Улучшена изоляция chunk/mesh state между измерениями.
+- Финальный Windows zip переименован в `TinyCraft-v0.2-final-windows.zip`.
+
 ## v0.2 Snapshot 9
 
 Snapshot 9 стабилизирует dedicated server после Snapshot 8: добавляет server-authority MVP для инвентаря/контейнеров, усиливает сетевой протокол и вводит JUnit headless tests.

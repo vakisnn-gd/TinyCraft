@@ -6,9 +6,9 @@ TinyCraft - маленькая Java/LWJGL voxel-песочница. В прое�
 
 ## Какая версия сейчас актуальная?
 
-Актуальный prerelease разработки - `v0.2 Snapshot 9`.
+Актуальная и последняя версия проекта - `v0.2 Final`.
 
-Последний stable-релиз на GitHub может отображаться отдельно. Snapshot 9 публикуется как prerelease, потому что multiplayer и dedicated server еще имеют честные ограничения.
+Это финальный релиз TinyCraft. Разработка завершена; дальше проект лучше воспринимать как архив учебного/экспериментального Minecraft-like проекта, а не как активно поддерживаемую игру.
 
 ## Где скачать игру?
 
@@ -16,11 +16,11 @@ TinyCraft - маленькая Java/LWJGL voxel-песочница. В прое�
 
 [https://github.com/vakisnn-gd/TinyCraft/releases](https://github.com/vakisnn-gd/TinyCraft/releases)
 
-Для Snapshot 9 используйте релиз:
+Используйте финальный релиз:
 
-- `v0.2 Snapshot 9`
-- tag: `v0.2-snapshot9`
-- asset: `TinyCraft-Snapshot9-windows.zip`
+- `TinyCraft v0.2 Final`
+- tag: `v0.2`
+- asset: `TinyCraft-v0.2-final-windows.zip`
 
 Скачивайте именно `.zip` из assets. `Source code` - это архив исходников от GitHub, он больше подходит для разработки.
 
@@ -64,7 +64,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 ## Поддерживается ли мультиплеер?
 
-Да. Snapshot 9 поддерживает Direct IP / LAN, dedicated server и первый server-authority проход для инвентаря/контейнеров.
+Да. `v0.2 Final` поддерживает Direct IP / LAN, dedicated server и server-authority проход для инвентаря/контейнеров.
 
 Работает:
 
@@ -83,7 +83,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 - relay/NAT traversal;
 - внешние аккаунты;
 - полноценный anti-cheat;
-- полная server-side модель особых предметных действий вроде buckets, spawn eggs, еды и выбрасывания предметов;
+- полная server-side модель особых предметных действий вроде buckets, spawn eggs и еды;
 - никнеймы над игроками.
 
 ## Как подключиться к серверу?
@@ -123,7 +123,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 ## Почему релиз только Windows?
 
-В репозитории сейчас лежат LWJGL natives только для Windows. Linux/macOS packaging можно добавить позже, но Snapshot 9 целится в Windows zip.
+В репозитории сейчас лежат LWJGL natives только для Windows. Финальный релиз целится в Windows zip; Linux/macOS packaging в проекте не завершался.
 
 ## Можно ли менять код?
 

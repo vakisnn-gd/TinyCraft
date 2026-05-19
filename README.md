@@ -2,7 +2,9 @@
 
 TinyCraft - небольшая Java/LWJGL voxel-песочница. В игре есть чанковый мир, биомы, горы, пещеры, шахты, деревни, мобы, инвентарь, крафт, печки, сундуки, жидкости, команды, LAN-мультиплеер и dedicated server.
 
-Текущая версия документации: `v0.2 Snapshot 9`.
+Текущая версия документации: `v0.2 Final`.
+
+`v0.2 Final` - последний релиз TinyCraft. Разработка проекта завершена; репозиторий оставлен как учебный/экспериментальный Java/LWJGL Minecraft-like проект.
 
 ## Скриншоты
 
@@ -20,7 +22,7 @@ TinyCraft - небольшая Java/LWJGL voxel-песочница. В игре 
 
 Требуется Java 8 или новее. Проект собирается с `--release 8`, поэтому совместим с Java 8 runtime, но запускать его можно и на более свежем JDK.
 
-Готовый клиентский zip Snapshot 9 рассчитан на Windows: в `lib/` сейчас лежат только Windows LWJGL natives. Для Linux/macOS нужны соответствующие LWJGL native jars и отдельные launch scripts. Headless dedicated server не использует OpenGL, но все равно требует Java 8+.
+Готовый клиентский zip `v0.2 Final` рассчитан на Windows: в `lib/` сейчас лежат только Windows LWJGL natives. Для Linux/macOS нужны соответствующие LWJGL native jars и отдельные launch scripts. Headless dedicated server не использует OpenGL, но все равно требует Java 8+.
 
 ```powershell
 javac -encoding UTF-8 --release 8 -cp "lib/*" -d out *.java
@@ -35,7 +37,7 @@ java -cp "out;lib/*" TinyCraft
 
 ## Dedicated Server
 
-Snapshot 9 стабилизирует headless dedicated server. Он запускает авторитетный `VoxelWorld`, слушает TCP на `0.0.0.0:25566`, принимает обычных клиентов TinyCraft и не создает окно, renderer, GLFW или аудио.
+`v0.2 Final` стабилизирует headless dedicated server. Он запускает авторитетный `VoxelWorld`, слушает TCP на `0.0.0.0:25566`, принимает обычных клиентов TinyCraft и не создает окно, renderer, GLFW или аудио.
 
 Запуск из исходников:
 
@@ -56,7 +58,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 .\build-release.bat
 ```
 
-Результат появится в `release/TinyCraft-Snapshot9-windows/` и `release/TinyCraft-Snapshot9-windows.zip`.
+Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
 
 При первом запуске рядом с проектом создается локальный `server.properties`. CLI-аргументы перекрывают значения из файла. Мир сервера хранится в `saves/<world>` и переиспользуется при следующих запусках с тем же `world`.
 
@@ -68,7 +70,7 @@ world=server_world
 seed=
 terrain=default
 maxPlayers=8
-motd=TinyCraft Snapshot 9 Server
+motd=TinyCraft v0.2 Final Server
 allowPvp=true
 allowCheats=false
 viewDistance=8
@@ -86,7 +88,7 @@ viewDistance=8
 | `save` | Сохраняет мир и подключенных игроков. |
 | `stop` | Сохраняет мир и останавливает сервер. |
 
-## Возможности Snapshot 9
+## Возможности v0.2 Final
 
 - Dedicated server без OpenGL-окна.
 - Direct IP/LAN-подключение к integrated host или dedicated server.
@@ -166,7 +168,7 @@ java -cp "out;lib/*" TinyCraft
 - Транспорт: чистый TCP без сторонних сетевых библиотек.
 - Framing: `int length` + `byte packetId` + payload через `DataInputStream` и `DataOutputStream`.
 - `MAGIC = TCMP`.
-- `VERSION = 4` в Snapshot 9.
+- `VERSION = 7` в v0.2 Final.
 - Порт по умолчанию: `25566`.
 
 | ID | Пакет | Назначение |
@@ -200,6 +202,7 @@ java -cp "out;lib/*" TinyCraft
 | 27 | `CONTAINER_CLICK` | Клик клиента по слоту активного server-side окна. |
 | 28 | `CONTAINER_CLOSE` | Закрытие активного server-side окна. |
 | 29 | `CONTAINER_UPDATE` | Обновление содержимого контейнера после принятого действия. |
+| 30 | `ITEM_DROP` | Запрос клиента на выбрасывание предмета из хотбара. |
 
 ## Управление
 

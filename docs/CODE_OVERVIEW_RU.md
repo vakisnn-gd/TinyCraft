@@ -36,10 +36,10 @@
 - Команды: local chat in `ChatSystem`, dedicated console/client commands in `GameServer`, LAN fallback in `MultiplayerManager`.
 - Предметы исчезают/дюпаются: `PlayerInventory.handleClick`, `sendInventorySync`, container handlers in `MultiplayerManager`.
 
-## Важные правила Snapshot 9
+## Важные правила v0.2 Final
 
-- Protocol version: `MultiplayerProtocol.VERSION = 4`.
-- Snapshot 8 clients intentionally incompatible.
+- Protocol version: `MultiplayerProtocol.VERSION = 7`.
+- Старые snapshot-клиенты intentionally incompatible.
 - Dedicated server authoritative for player mode/health, inventory, containers, block place/break.
 - User-facing namespace is `tinycraft:name`; internal block registry still uses legacy names until the registry is renamed.
 - Windows-first release: current bundled LWJGL natives are Windows-only.

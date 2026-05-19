@@ -1,6 +1,6 @@
 # Известные проблемы
 
-Этот файл специально честный. TinyCraft `v0.2 Snapshot 9` - prerelease с dedicated server, улучшенным LAN-мультиплеером и первым server-authority проходом, а не завершенная публичная multiplayer-платформа.
+Этот файл специально честный. TinyCraft `v0.2 Final` - последний релиз проекта с dedicated server, улучшенным LAN-мультиплеером и server-authority проходом, но это не завершенная публичная multiplayer-платформа.
 
 ## Мультиплеер и сервер
 
@@ -10,10 +10,10 @@
 - Если две копии игры используют один UUID, сервер отклонит вторую как duplicate UUID.
 - Нет полноценного anti-cheat. Сервер проверяет размеры/частоту пакетов, дистанцию действий с блоками и базовые значения player state, но это не защита уровня публичных серверов.
 - Сундуки, печки, верстак и основной инвентарь имеют server-side MVP через `INVENTORY_SYNC` и `CONTAINER_*`, но UX отклоненных действий пока минимальный.
-- Не все предметные действия полностью авторитетны: buckets, spawn eggs, еда и выбрасывание предметов требуют следующего server-side прохода.
+- Не все предметные действия полностью авторитетны: buckets, spawn eggs и еда остались упрощенными.
 - Подключение через интернет требует ручной настройки сети: firewall, port-forward или VPN.
 - При высокой задержке возможны рывки remote players и задержки применения блоков/контейнерных кликов.
-- Snapshot mobs/drop/player snapshots базовые и могут выглядеть дергано.
+- Mobs/drop/player snapshots базовые и могут выглядеть дергано.
 - Никнеймы над игроками временно отключены.
 
 ## Dedicated server MVP
@@ -23,7 +23,7 @@
 - Сервер сохраняет подключенных игроков при `save`, autosave, disconnect и `stop`.
 - Console-команды покрывают базовое администрирование: `help`, `status`, `list`, `say`, `kick`, `save`, `stop`, `op`, `deop`, `whitelist`, `ban`, `pardon`, `tp`, `gamemode`, `give`, `clear`.
 - Whitelist/operator/ban уже есть, но полноценная модель ролей admin/guest и GUI для прав еще не завершены.
-- `allowCheats` уже есть в config, но его связь с `/give`, `/clear`, `/gamemode` и `/tp` требует дальнейшей полировки.
+- `allowCheats=true` разрешает игрокам cheat-команды вроде `/give`, `/clear`, `/gamemode` и `/tp`; при `allowCheats=false` они доступны operator/console-стороне.
 
 ## Генерация мира
 
