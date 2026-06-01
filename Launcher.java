@@ -1260,8 +1260,9 @@ public class Launcher {
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         Process process = builder.start();
         try {
-            if (process.waitFor(2500, TimeUnit.MILLISECONDS) && process.exitValue() != 0) {
-                throw new IOException("Игра закрылась сразу. Лог: " + logFile.getAbsolutePath());
+            if (process.waitFor(10000, TimeUnit.MILLISECONDS)) {
+                throw new IOException("Игра закрылась раньше, чем появилось окно. Код завершения: "
+                        + process.exitValue() + ". Лог: " + logFile.getAbsolutePath());
             }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -1438,7 +1439,7 @@ public class Launcher {
         if (!savedPlayerName.isEmpty()) {
             nameField.setText(sanitizePlayerName(savedPlayerName));
         }
-        keepLauncherOpenBox.setSelected(Boolean.parseBoolean(properties.getProperty(KEY_KEEP_OPEN, "false")));
+        keepLauncherOpenBox.setSelected(Boolean.parseBoolean(properties.getProperty(KEY_KEEP_OPEN, "true")));
         themeIndex = parseThemeIndex(properties.getProperty(KEY_THEME, "0"));
         if (formPanel != null) {
             applyTheme();
@@ -1604,7 +1605,15 @@ public class Launcher {
     }
 
     private void showError(String message, Exception ex) {
-        JOptionPane.showMessageDialog(frame, message + ":\n" + ex.getMessage(), "TinyCraft Launcher", JOptionPane.ERROR_MESSAGE);
+        Throwable cause = ex;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String details = cause.getMessage();
+        if (details == null || details.trim().isEmpty()) {
+            details = cause.getClass().getSimpleName();
+        }
+        JOptionPane.showMessageDialog(frame, message + ":\n" + details, "TinyCraft Launcher", JOptionPane.ERROR_MESSAGE);
     }
 
     private static final class GameVersion {
