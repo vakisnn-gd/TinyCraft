@@ -4,7 +4,7 @@
 
 Это последний релиз TinyCraft. Разработка проекта завершена; версия опубликована как финальная точка учебного/экспериментального Java/LWJGL Minecraft-like проекта.
 
-### Финальный проход после Snapshot 9
+### Финальный проход после v0.2.1
 
 - Paradise перенесен в отдельное измерение через `dimensionId`, без координатного offset.
 - Multiplayer стал серверно-авторитетным для gamemode, creative inventory, item drops, furnace/container updates и ломания блоков.
@@ -14,9 +14,9 @@
 - Улучшена изоляция chunk/mesh state между измерениями.
 - Финальный Windows zip переименован в `TinyCraft-v0.2-final-windows.zip`.
 
-## v0.2 Snapshot 9
+## v0.2.1
 
-Snapshot 9 стабилизирует dedicated server после Snapshot 8: добавляет server-authority MVP для инвентаря/контейнеров, усиливает сетевой протокол и вводит JUnit headless tests.
+v0.2.1 стабилизирует dedicated server после Snapshot 8: добавляет server-authority MVP для инвентаря/контейнеров, усиливает сетевой протокол и вводит JUnit headless tests.
 
 ### Добавлено
 
@@ -32,10 +32,10 @@ Snapshot 9 стабилизирует dedicated server после Snapshot 8: д
 - Multiplayer protocol поднят до `VERSION = 4`.
 - Клиентский multiplayer mirror больше не применяет локально ломание/установку блоков до серверного `BLOCK_UPDATE`.
 - `/give`, `/clear`, `/gamemode` и `/tp` проходят через multiplayer/server command path.
-- README, FAQ, KNOWN_ISSUES и ROADMAP обновлены под Snapshot 9.
-- Клиент Snapshot 9 несовместим со Snapshot 8 host/server по сетевому протоколу.
+- README, FAQ, KNOWN_ISSUES и ROADMAP обновлены под v0.2.1.
+- Клиент v0.2.1 несовместим со Snapshot 8 host/server по сетевому протоколу.
 
-### Ограничения Snapshot 9
+### Ограничения v0.2.1
 
 - Это все еще prerelease без public server browser, relay/NAT traversal и внешних аккаунтов.
 - Server authority для buckets, spawn eggs, еды и выбрасывания предметов требует следующего прохода.

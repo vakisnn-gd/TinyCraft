@@ -52,7 +52,7 @@ final class VoxelWorld implements StructureTemplates.Target {
     private static final int MAX_LAVA_CELLS_PER_WORLD_TICK = 32;
     private static final int MAX_SAND_CELLS_PER_WORLD_TICK = 96;
     private static final int MAX_MOB_AI_UPDATES_PER_FRAME = 32;
-    private static final int SPAWN_LAND_SEARCH_RADIUS = 64;
+    private static final int SPAWN_LAND_SEARCH_RADIUS = 256;
     private static final int SPAWN_LAND_SEARCH_STEP = 16;
 
     static final class ChunkColumn {
@@ -912,15 +912,41 @@ final class VoxelWorld implements StructureTemplates.Target {
         }
 
         if (bestY == Integer.MIN_VALUE) {
-            bestX = 0;
-            bestZ = 0;
-            ensureColumnGeneratedSync(0, 0);
-            bestY = Math.max(GameConfig.WORLD_MIN_Y + 2, getSurfaceHeight(0, 0));
+            int[] fallback = findNearestGeneratedDrySpawn();
+            if (fallback != null) {
+                bestX = fallback[0];
+                bestY = fallback[1];
+                bestZ = fallback[2];
+            } else {
+                bestX = 0;
+                bestZ = 0;
+                ensureColumnGeneratedSync(0, 0);
+                bestY = Math.max(GameConfig.SEA_LEVEL + 1, getSurfaceHeight(0, 0));
+            }
         }
 
         player.x = bestX + 0.5;
         player.z = bestZ + 0.5;
         player.y = getStandingY(player.x, player.z, bestY + 1.0);
+    }
+
+    private int[] findNearestGeneratedDrySpawn() {
+        int bestDistance = Integer.MAX_VALUE;
+        int[] best = null;
+        for (int x = -SPAWN_LAND_SEARCH_RADIUS; x <= SPAWN_LAND_SEARCH_RADIUS; x += 4) {
+            for (int z = -SPAWN_LAND_SEARCH_RADIUS; z <= SPAWN_LAND_SEARCH_RADIUS; z += 4) {
+                int y = findExactSpawnAt(x, z);
+                if (y == Integer.MIN_VALUE) {
+                    continue;
+                }
+                int distance = x * x + z * z;
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = new int[]{x, y, z};
+                }
+            }
+        }
+        return best;
     }
 
     private int[] findExactSpawnNear(int centerX, int centerZ) {
@@ -1167,6 +1193,11 @@ final class VoxelWorld implements StructureTemplates.Target {
                     break;
                 }
             }
+            if (!player.spectatorMode && isUnsafeSavedPlayerPosition(player)) {
+                placePlayerAtSpawn(player);
+                player.verticalVelocity = 0.0;
+                player.isGrounded = true;
+            }
             return true;
         } catch (IOException exception) {
             if (GameConfig.ENABLE_DEBUG_LOGS) {
@@ -1174,6 +1205,18 @@ final class VoxelWorld implements StructureTemplates.Target {
             }
             return false;
         }
+    }
+
+    private boolean isUnsafeSavedPlayerPosition(PlayerState player) {
+        int blockX = (int) Math.floor(player.x);
+        int feetY = (int) Math.floor(player.y + 0.08);
+        int headY = (int) Math.floor(player.y + player.eyeHeight());
+        int blockZ = (int) Math.floor(player.z);
+        ensureColumnGeneratedSync(worldToChunk(blockX), worldToChunk(blockZ));
+        return GameConfig.isWaterBlock(getBlock(blockX, feetY, blockZ))
+            || GameConfig.isWaterBlock(getBlock(blockX, headY, blockZ))
+            || GameConfig.isLavaBlock(getBlock(blockX, feetY, blockZ))
+            || GameConfig.isLavaBlock(getBlock(blockX, headY, blockZ));
     }
 
     void savePlayerState(PlayerState player) {

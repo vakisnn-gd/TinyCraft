@@ -529,6 +529,11 @@ final class RuntimePaths {
     }
 
     private static Path detectProjectRoot() {
+        String configuredHome = System.getProperty("tinycraft.home");
+        if (configuredHome != null && !configuredHome.trim().isEmpty()) {
+            return Paths.get(configuredHome).toAbsolutePath().normalize();
+        }
+
         Path cwd = Paths.get("").toAbsolutePath().normalize();
         Path cwdRoot = projectRootFrom(cwd);
         if (cwdRoot != null) {

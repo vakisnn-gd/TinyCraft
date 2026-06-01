@@ -62,6 +62,9 @@ final class WaterRenderer {
             return true;
         }
         if (liquid) {
+            if (isWaterPlant(neighbor)) {
+                return false;
+            }
             if (!neighborLiquid) {
                 return !neighborSolid;
             }
@@ -113,5 +116,9 @@ final class WaterRenderer {
 
     double liquidRenderHeight(byte block, int worldX, int worldY, int worldZ) {
         return world.getFluidSurfaceHeight(worldX, worldY, worldZ);
+    }
+
+    private boolean isWaterPlant(byte block) {
+        return block == GameConfig.SEAGRASS || block == GameConfig.KELP;
     }
 }

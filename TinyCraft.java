@@ -1,8 +1,11 @@
+import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFWErrorCallback;
+import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.system.MemoryStack;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -86,6 +89,7 @@ import static org.lwjgl.glfw.GLFW.glfwSetKeyCallback;
 import static org.lwjgl.glfw.GLFW.glfwSetMouseButtonCallback;
 import static org.lwjgl.glfw.GLFW.glfwSetScrollCallback;
 import static org.lwjgl.glfw.GLFW.glfwSetWindowMonitor;
+import static org.lwjgl.glfw.GLFW.glfwSetWindowIcon;
 import static org.lwjgl.glfw.GLFW.glfwSetWindowShouldClose;
 import static org.lwjgl.glfw.GLFW.glfwShowWindow;
 import static org.lwjgl.glfw.GLFW.glfwSwapBuffers;
@@ -340,6 +344,56 @@ public class TinyCraft implements MultiplayerManager.Listener {
         }
     }
 
+    private void setGrassBlockWindowIcon() {
+        final int size = 32;
+        ByteBuffer pixels = BufferUtils.createByteBuffer(size * size * 4);
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int r = 0;
+                int g = 0;
+                int b = 0;
+                int a = 0;
+                boolean border = x < 3 || x >= size - 3 || y < 3 || y >= size - 3;
+                if (!border) {
+                    a = 255;
+                    if (y < 11) {
+                        r = x < 15 ? 78 : 61;
+                        g = x < 15 ? 170 : 145;
+                        b = 61;
+                    } else if (y < 14) {
+                        r = 39;
+                        g = 112;
+                        b = 46;
+                    } else {
+                        r = 122;
+                        g = 78;
+                        b = 43;
+                        if ((x >= 8 && x <= 12 && y >= 17 && y <= 21)
+                            || (x >= 20 && x <= 24 && y >= 20 && y <= 24)) {
+                            r = 153;
+                            g = 101;
+                            b = 55;
+                        } else if (x >= 13 && x <= 17 && y >= 25) {
+                            r = 66;
+                            g = 42;
+                            b = 28;
+                        }
+                    }
+                }
+                pixels.put((byte) r).put((byte) g).put((byte) b).put((byte) a);
+            }
+        }
+        pixels.flip();
+
+        GLFWImage.Buffer icons = GLFWImage.malloc(1);
+        try {
+            icons.position(0).width(size).height(size).pixels(pixels);
+            glfwSetWindowIcon(window, icons);
+        } finally {
+            icons.free();
+        }
+    }
+
     private void initWindow() {
         errorCallback = GLFWErrorCallback.createPrint(System.err);
         errorCallback.set();
@@ -365,6 +419,7 @@ public class TinyCraft implements MultiplayerManager.Listener {
         if (window == NULL) {
             throw new IllegalStateException("Unable to create window");
         }
+        setGrassBlockWindowIcon();
 
         if (videoMode != null) {
             windowedWidth = GameConfig.WINDOW_WIDTH;
@@ -3075,6 +3130,7 @@ public class TinyCraft implements MultiplayerManager.Listener {
             multiplayer.sendCommand("/gamemode " + gameModeCommandName(gameModeSelection));
         } else {
             setGameMode(gameModeSelection);
+            saveLocalPlayerStateIfWorldLoaded();
         }
         gameModeSwitcherActive = false;
     }
@@ -3110,6 +3166,15 @@ public class TinyCraft implements MultiplayerManager.Listener {
         syncPlayerModeState();
         syncSelectedHotbarItem();
         updateCursorMode();
+    }
+
+    private void saveLocalPlayerStateIfWorldLoaded() {
+        if (!worldLoaded || multiplayer.isMultiplayerActive()) {
+            return;
+        }
+        syncPlayerModeState();
+        saveCurrentWorldMetadata();
+        world.savePlayerState(player, inventory);
     }
 
     private void selectHotbarSlot(int slot) {
