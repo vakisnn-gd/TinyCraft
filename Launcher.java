@@ -43,6 +43,8 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLConnection;
@@ -834,7 +836,12 @@ public class Launcher {
             File versionDir = getVersionDirectory(version);
             File jarFile = new File(versionDir, GAME_JAR_NAME);
 
-            if (forceUpdateBox.isSelected() || !jarFile.isFile()) {
+            boolean mustRefresh = forceUpdateBox.isSelected() || !isInstalledVersionValid(versionDir);
+            if (mustRefresh && versionDir.exists()) {
+                deleteDirectory(versionDir);
+            }
+
+            if (mustRefresh) {
                 installVersion(version, versionDir, jarFile);
             }
 
@@ -891,6 +898,7 @@ public class Launcher {
             if (!stagingDir.mkdirs()) {
                 throw new IOException("Не удалось создать папку: " + stagingDir.getAbsolutePath());
             }
+            Files.deleteIfExists(archiveFile.toPath());
 
             boolean installed = false;
             try {
@@ -1803,11 +1811,67 @@ public class Launcher {
         while (cause.getCause() != null) {
             cause = cause.getCause();
         }
-        String details = cause.getMessage();
+        writeLauncherErrorLog(message, ex);
+        String details = isCorruptedLauncherBuildFailure(cause)
+                ? "Повреждена сборка лаунчера. Скачайте свежий TinyCraftLauncher-windows.zip"
+                : cause.getMessage();
         if (details == null || details.trim().isEmpty()) {
             details = cause.getClass().getSimpleName();
         }
         JOptionPane.showMessageDialog(frame, message + ":\n" + details, "TinyCraft Launcher", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private static boolean isInstalledVersionValid(File versionDir) {
+        if (versionDir == null || !versionDir.isDirectory()) {
+            return false;
+        }
+
+        File jarFile = new File(versionDir, GAME_JAR_NAME);
+        if (!jarFile.isFile()) {
+            return false;
+        }
+
+        if (!new File(versionDir, "run-game.bat").isFile()) {
+            return false;
+        }
+
+        File libDir = new File(versionDir, "lib");
+        File[] libs = libDir.isDirectory() ? libDir.listFiles(new java.io.FileFilter() {
+            @Override
+            public boolean accept(File file) {
+                return file.isFile() && file.getName().toLowerCase().endsWith(".jar");
+            }
+        }) : null;
+        return libs != null && libs.length > 0;
+    }
+
+    private static boolean isCorruptedLauncherBuildFailure(Throwable cause) {
+        if (cause instanceof NoClassDefFoundError || cause instanceof ClassNotFoundException) {
+            String text = cause.getMessage();
+            return text == null || text.contains("Launcher$");
+        }
+        String name = cause.getClass().getName();
+        return name.contains("InstallAndRunWorker") && (cause instanceof LinkageError || cause instanceof Error);
+    }
+
+    private static void writeLauncherErrorLog(String message, Throwable throwable) {
+        File logDir = getLogsDirectory();
+        if (!logDir.isDirectory() && !logDir.mkdirs()) {
+            return;
+        }
+
+        File logFile = new File(logDir, "launcher-errors.log");
+        try (FileWriter fileWriter = new FileWriter(logFile, true);
+             PrintWriter writer = new PrintWriter(fileWriter)) {
+            writer.println("==== " + new java.util.Date() + " :: " + message + " ====");
+            StringWriter buffer = new StringWriter();
+            PrintWriter stack = new PrintWriter(buffer);
+            throwable.printStackTrace(stack);
+            stack.flush();
+            writer.print(buffer.toString());
+            writer.println();
+        } catch (IOException ignored) {
+        }
     }
 
     private static final class GameVersion {

@@ -60,6 +60,14 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
 
+Отдельно лаунчер собирается так:
+
+```powershell
+.\build-launcher.bat
+```
+
+Готовый `TinyCraftLauncher-windows.zip` будет лежать в `release/`.
+
 При первом запуске рядом с проектом создается локальный `server.properties`. CLI-аргументы перекрывают значения из файла. Мир сервера хранится в `saves/<world>` и переиспользуется при следующих запусках с тем же `world`.
 
 Основные настройки:
