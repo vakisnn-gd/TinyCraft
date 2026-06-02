@@ -4,16 +4,20 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
+import javax.swing.JDialog;
+import javax.swing.JEditorPane;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JProgressBar;
+import javax.swing.JScrollPane;
 import javax.swing.ListCellRenderer;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.JTextField;
 import javax.swing.UIManager;
+import javax.swing.event.HyperlinkEvent;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -35,6 +39,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -146,6 +151,7 @@ public class Launcher {
     private final JButton openFolderButton = new SmallIconButton("Папка");
     private final JButton reloadButton = new SmallIconButton("Обновить");
     private final JButton settingsButton = new SmallIconButton("Настройки");
+    private final JButton infoButton = new SmallIconButton("Инфо");
     private final JButton themeButton = new ThemeButton();
     private final JButton cancelButton = new SmallIconButton("Отмена");
     private final JTextField nameField = new JTextField("Player");
@@ -297,6 +303,7 @@ public class Launcher {
         styleSmallButton(openFolderButton);
         styleSmallButton(reloadButton);
         styleSmallButton(settingsButton);
+        styleSmallButton(infoButton);
         styleSmallButton(cancelButton);
         cancelButton.setVisible(false);
         GridBagConstraints t = new GridBagConstraints();
@@ -306,8 +313,10 @@ public class Launcher {
         tools.add(openFolderButton, t);
         t.insets = new Insets(0, 2, 0, 2);
         tools.add(reloadButton, t);
-        t.insets = new Insets(0, 2, 0, 0);
+        t.insets = new Insets(0, 2, 0, 2);
         tools.add(settingsButton, t);
+        t.insets = new Insets(0, 2, 0, 0);
+        tools.add(infoButton, t);
         t.insets = new Insets(0, 2, 0, 0);
         tools.add(cancelButton, t);
         c.gridx = 0;
@@ -345,6 +354,7 @@ public class Launcher {
         openFolderButton.addActionListener(e -> openGameFolder());
         reloadButton.addActionListener(e -> loadVersions());
         settingsButton.addActionListener(e -> showSettingsDialog());
+        infoButton.addActionListener(e -> showGameInfoDialog());
         themeButton.addActionListener(e -> cycleTheme());
         cancelButton.addActionListener(e -> cancelCurrentInstall());
 
@@ -464,8 +474,11 @@ public class Launcher {
         button.setFont(button.getFont().deriveFont(Font.BOLD, 13f));
         button.setForeground(LEGACY_TEXT);
         button.setBackground(LEGACY_FIELD);
+        button.setOpaque(false);
+        button.setContentAreaFilled(false);
+        button.setBorderPainted(false);
         button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createLineBorder(new Color(118, 120, 120)));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
         button.setPreferredSize(new Dimension(130, 44));
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
     }
@@ -508,6 +521,7 @@ public class Launcher {
         openFolderButton.setBackground(field);
         reloadButton.setBackground(field);
         settingsButton.setBackground(field);
+        infoButton.setBackground(field);
         progressBar.setForeground(accent);
         playButton.setBackground(themeIndex == 1 ? DEEP_GRASS : field);
         rootPanel.setTheme(themeIndex);
@@ -543,6 +557,47 @@ public class Launcher {
                         "- оставить лаунчер открытым после запуска.\n\n" +
                         "Папка версий:\n" + getVersionsDirectory().getAbsolutePath(),
                 "Настройки", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void showGameInfoDialog() {
+        JDialog dialog = new JDialog(frame, "Информация о TinyCraft", false);
+        JEditorPane content = new JEditorPane("text/html", buildGameInfoHtml());
+        content.setEditable(false);
+        content.setOpaque(true);
+        content.setBackground(new Color(42, 44, 44));
+        content.setForeground(LEGACY_TEXT);
+        content.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+        content.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
+        content.addHyperlinkListener(event -> {
+            if (event.getEventType() == HyperlinkEvent.EventType.ACTIVATED && event.getURL() != null) {
+                try {
+                    Desktop.getDesktop().browse(event.getURL().toURI());
+                } catch (Exception ex) {
+                    showError("Не удалось открыть ссылку", new IOException(event.getURL().toString(), ex));
+                }
+            }
+        });
+
+        JScrollPane scrollPane = new JScrollPane(content);
+        scrollPane.setBorder(BorderFactory.createEmptyBorder());
+        dialog.setContentPane(scrollPane);
+        dialog.setSize(new Dimension(760, 560));
+        dialog.setLocationRelativeTo(frame);
+        dialog.setVisible(true);
+    }
+
+    private static String buildGameInfoHtml() {
+        return "<html><body style='font-family:sans-serif;background:#2a2c2c;color:#eeeeea;padding:18px;'>"
+                + "<h1>TinyCraft</h1>"
+                + "<p>Небольшая Java/LWJGL voxel-песочница с чанковым миром, биомами, горами, пещерами, шахтами, деревнями, мобами, инвентарем, крафтом, печками, сундуками, жидкостями, командами, LAN-мультиплеером и dedicated server.</p>"
+                + "<h2>Текущая версия</h2>"
+                + "<p><b>v0.2.1</b> - финальная стабильная сборка поверх v0.2 Final.</p>"
+                + "<h2>Ссылки</h2>"
+                + "<p><a href='https://github.com/vakisnn-gd/TinyCraft'>Главная страница GitHub</a></p>"
+                + "<p><a href='https://github.com/vakisnn-gd/TinyCraft/releases'>Скачать релизы</a></p>"
+                + "<h2>Если игра не запускается</h2>"
+                + "<p>Откройте папку логов: <code>%LOCALAPPDATA%\\TinyCraftLauncher\\logs</code> и пришлите latest-log выбранной версии.</p>"
+                + "</body></html>";
     }
 
     private void updateSelectedVersionInfo() {
@@ -644,6 +699,32 @@ public class Launcher {
     private static final class SmallIconButton extends JButton {
         private SmallIconButton(String text) {
             super(text);
+        }
+
+        @Override
+        protected void paintComponent(Graphics graphics) {
+            Graphics2D g = (Graphics2D) graphics.create();
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            ButtonModel model = getModel();
+            Color base = getBackground() == null ? LEGACY_FIELD : getBackground();
+            Color fill = model.isPressed() ? base.darker() : base;
+            if (!isEnabled()) {
+                fill = new Color(72, 74, 74);
+            } else if (model.isRollover()) {
+                fill = base.brighter();
+            }
+            g.setColor(fill);
+            g.fillRoundRect(0, 0, getWidth(), getHeight(), 6, 6);
+            g.setColor(isEnabled() ? new Color(148, 154, 154) : new Color(92, 94, 94));
+            g.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 6, 6);
+            g.setFont(getFont());
+            FontMetrics metrics = g.getFontMetrics();
+            String text = getText();
+            int textX = (getWidth() - metrics.stringWidth(text)) / 2;
+            int textY = (getHeight() - metrics.getHeight()) / 2 + metrics.getAscent();
+            g.setColor(isEnabled() ? LEGACY_TEXT : new Color(150, 154, 154));
+            g.drawString(text, textX, textY);
+            g.dispose();
         }
     }
 
@@ -813,15 +894,27 @@ public class Launcher {
 
             boolean installed = false;
             try {
-                progress(5, "Скачивание " + version.name + "...");
-                downloadFile(version.downloadUrl, archiveFile, 5, 45);
+                progress(2, "Подготовка загрузки " + version.name + "...");
+                downloadFile(version.downloadUrl, archiveFile, 2, 55);
                 checkCancelled();
                 if (!version.sha256.isEmpty()) {
                     verifySha256(archiveFile, version.sha256);
                 }
 
-                progress(50, "Распаковка...");
-                unzipGitHubArchive(archiveFile, stagingDir);
+                progress(56, "Распаковка...");
+                unzipGitHubArchive(archiveFile, stagingDir, new ProgressListener() {
+                    @Override
+                    public void onProgress(long currentBytes, long totalBytes) throws IOException {
+                        checkCancelled();
+                        if (totalBytes > 0) {
+                            int value = 56 + (int) Math.min(24, currentBytes * 24 / totalBytes);
+                            int percent = (int) Math.min(100, currentBytes * 100 / totalBytes);
+                            progress(value, "Распаковка " + percent + "% (" + formatBytes(currentBytes) + " / " + formatBytes(totalBytes) + ")");
+                        } else {
+                            progress(56, "Распаковка " + formatBytes(currentBytes));
+                        }
+                    }
+                });
                 checkCancelled();
 
                 File stagingJar = new File(stagingDir, GAME_JAR_NAME);
@@ -832,7 +925,7 @@ public class Launcher {
                         checkCancelled();
                     }
 
-                    progress(85, "Создание TinyCraft.jar...");
+                    progress(82, "Создание TinyCraft.jar...");
                     createRunnableJar(stagingDir, stagingJar, version.mainClass);
                 }
 
@@ -840,7 +933,7 @@ public class Launcher {
                     throw new IOException("В версии не найден " + GAME_JAR_NAME);
                 }
 
-                progress(95, "Установка...");
+                progress(94, "Установка...");
                 deleteDirectory(versionDir);
                 Files.move(stagingDir.toPath(), versionDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 installed = true;
@@ -862,6 +955,7 @@ public class Launcher {
                     statusLabel.setVisible(true);
                     progressBar.setVisible(true);
                     progressBar.setValue(value);
+                    progressBar.setString(message);
                 }
             });
             publish(message);
@@ -870,21 +964,6 @@ public class Launcher {
         private void downloadFile(String sourceUrl, File targetFile, int startPercent, int endPercent) throws IOException {
             File tempFile = new File(targetFile.getParentFile(), targetFile.getName() + ".download");
             Files.deleteIfExists(tempFile.toPath());
-
-            if (isHttpUrl(sourceUrl) && isWindows()) {
-                progress(startPercent, "Скачивание " + version.name + "...");
-                try {
-                    if (downloadWithWindowsDownloader(sourceUrl, tempFile, targetFile.getParentFile())) {
-                        checkCancelled();
-                        progress(endPercent, "Скачивание " + version.name + "...");
-                        Files.move(tempFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                        return;
-                    }
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException("Скачивание было прервано.", ex);
-                }
-            }
 
             URLConnection connection = URI.create(sourceUrl).toURL().openConnection();
             connection.setConnectTimeout(15000);
@@ -898,7 +977,7 @@ public class Launcher {
                 }
             }
 
-            int totalBytes = connection.getContentLength();
+            long totalBytes = connection.getContentLengthLong();
 
             try (InputStream in = new BufferedInputStream(connection.getInputStream());
                  FileOutputStream out = new FileOutputStream(tempFile)) {
@@ -914,7 +993,10 @@ public class Launcher {
                     if (totalBytes > 0) {
                         int range = endPercent - startPercent;
                         int value = startPercent + (int) Math.min(range, downloaded * range / totalBytes);
-                        progress(value, "Скачивание " + version.name + "...");
+                        int percent = (int) Math.min(100, downloaded * 100 / totalBytes);
+                        progress(value, "Скачивание " + percent + "% (" + formatBytes(downloaded) + " / " + formatBytes(totalBytes) + ")");
+                    } else {
+                        progress(startPercent, "Скачивание " + formatBytes(downloaded));
                     }
                 }
             } finally {
@@ -1002,12 +1084,21 @@ public class Launcher {
         }
     }
 
-    private static void unzipGitHubArchive(File archiveFile, File targetDir) throws IOException {
-        String targetPath = targetDir.getCanonicalPath() + File.separator;
+    private interface ProgressListener {
+        void onProgress(long currentBytes, long totalBytes) throws IOException;
+    }
 
-        try (ZipInputStream zip = new ZipInputStream(new FileInputStream(archiveFile))) {
+    private static void unzipGitHubArchive(File archiveFile, File targetDir, ProgressListener progressListener) throws IOException {
+        String targetPath = targetDir.getCanonicalPath() + File.separator;
+        long totalBytes = archiveFile.length();
+
+        try (CountingInputStream input = new CountingInputStream(new FileInputStream(archiveFile));
+             ZipInputStream zip = new ZipInputStream(input)) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
+                if (progressListener != null) {
+                    progressListener.onProgress(input.getBytesRead(), totalBytes);
+                }
                 String name = normalizeZipEntryName(entry.getName());
                 if (name.isEmpty()) {
                     continue;
@@ -1036,10 +1127,61 @@ public class Launcher {
                     int read;
                     while ((read = zip.read(buffer)) != -1) {
                         out.write(buffer, 0, read);
+                        if (progressListener != null) {
+                            progressListener.onProgress(input.getBytesRead(), totalBytes);
+                        }
                     }
                 }
             }
+            if (progressListener != null) {
+                progressListener.onProgress(totalBytes, totalBytes);
+            }
         }
+    }
+
+    private static final class CountingInputStream extends FilterInputStream {
+        private long bytesRead;
+
+        private CountingInputStream(InputStream input) {
+            super(input);
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = super.read();
+            if (value != -1) {
+                bytesRead++;
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            int read = super.read(buffer, offset, length);
+            if (read > 0) {
+                bytesRead += read;
+            }
+            return read;
+        }
+
+        private long getBytesRead() {
+            return bytesRead;
+        }
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        double kib = bytes / 1024.0;
+        if (kib < 1024.0) {
+            return String.format(java.util.Locale.US, "%.1f KB", kib);
+        }
+        double mib = kib / 1024.0;
+        if (mib < 1024.0) {
+            return String.format(java.util.Locale.US, "%.1f MB", mib);
+        }
+        return String.format(java.util.Locale.US, "%.1f GB", mib / 1024.0);
     }
 
     private static String normalizeZipEntryName(String path) {
@@ -1261,8 +1403,11 @@ public class Launcher {
         Process process = builder.start();
         try {
             if (process.waitFor(10000, TimeUnit.MILLISECONDS)) {
-                throw new IOException("Игра закрылась раньше, чем появилось окно. Код завершения: "
-                        + process.exitValue() + ". Лог: " + logFile.getAbsolutePath());
+                int exitCode = process.exitValue();
+                if (exitCode != 0) {
+                    throw new IOException("Игра закрылась раньше, чем появилось окно. Код завершения: "
+                            + exitCode + ". Лог: " + logFile.getAbsolutePath());
+                }
             }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -1646,6 +1791,7 @@ public class Launcher {
         statusLabel.setText(status);
         if (!busy) {
             progressBar.setValue(0);
+            progressBar.setString("");
             statusLabel.setVisible(false);
             progressBar.setVisible(false);
             updateSelectedVersionInfo();

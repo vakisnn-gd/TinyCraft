@@ -5342,6 +5342,8 @@ final class OpenGlRenderer {
 
     private void drawTextTexture(float x, float y, float scale, String text, float red, float green, float blue) {
         TextTexture texture = getTextTexture(text, scale);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texture.textureId);
         glColor4f(red, green, blue, 1.0f);
@@ -5358,6 +5360,7 @@ final class OpenGlRenderer {
         glEnd();
         glBindTexture(GL_TEXTURE_2D, 0);
         glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
     }
 
     private TextTexture getTextTexture(String text, float scale) {
