@@ -1246,7 +1246,7 @@ public class Launcher {
         }
         File logFile = new File(logDir, version.id + "-latest.log");
         ProcessBuilder builder = new ProcessBuilder(
-                findJavaCommand(),
+                findJavaCommand(version.javaRelease),
                 "-Dfile.encoding=UTF-8",
                 "-Dtinycraft.home=" + jarFile.getParentFile().getAbsolutePath(),
                 "-jar",
@@ -1302,7 +1302,7 @@ public class Launcher {
         Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
     }
 
-    private static String findJavaCommand() {
+    private static String findJavaCommand(int minimumRelease) {
         File launcherDir = getLauncherDirectory();
         File parentDir = launcherDir.getParentFile();
         File[] candidates = {
@@ -1312,11 +1312,59 @@ public class Launcher {
                 new File(new File(new File(parentDir == null ? launcherDir : parentDir, "runtime"), "bin"), "java")
         };
         for (File candidate : candidates) {
-            if (candidate.isFile()) {
+            if (candidate.isFile() && javaReleaseAtLeast(candidate, minimumRelease)) {
                 return candidate.getAbsolutePath();
             }
         }
         return "java";
+    }
+
+    private static boolean javaReleaseAtLeast(File javaExecutable, int minimumRelease) {
+        if (minimumRelease <= 8) {
+            return javaExecutable.isFile();
+        }
+        try {
+            int release = detectJavaRelease(javaExecutable);
+            return release >= minimumRelease;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static int detectJavaRelease(File javaExecutable) throws IOException, InterruptedException {
+        ProcessBuilder builder = new ProcessBuilder(javaExecutable.getAbsolutePath(), "-version");
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        } finally {
+            process.waitFor(5, TimeUnit.SECONDS);
+        }
+
+        String text = output.toString();
+        int versionIndex = text.indexOf("version \"");
+        if (versionIndex < 0) {
+            return -1;
+        }
+        int start = versionIndex + "version \"".length();
+        int end = text.indexOf('"', start);
+        if (end < 0) {
+            return -1;
+        }
+        String rawVersion = text.substring(start, end).trim();
+        if (rawVersion.startsWith("1.")) {
+            int dot = rawVersion.indexOf('.', 2);
+            if (dot > 0) {
+                return Integer.parseInt(rawVersion.substring(2, dot));
+            }
+        }
+        int dot = rawVersion.indexOf('.');
+        String major = dot > 0 ? rawVersion.substring(0, dot) : rawVersion;
+        return Integer.parseInt(major);
     }
 
     private static void saveProfile(File versionDir, String rawName) throws IOException {
