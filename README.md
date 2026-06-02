@@ -1,10 +1,10 @@
 # TinyCraft
 
-TinyCraft - небольшая Java/LWJGL voxel-песочница. В игре есть чанковый мир, биомы, горы, пещеры, шахты, деревни, мобы, инвентарь, крафт, печки, сундуки, жидкости, команды, LAN-мультиплеер и dedicated server.
+TinyCraft - небольшая Java/LWJGL voxel-песочница в духе Minecraft. В проекте есть singleplayer, чанковый мир, биомы, пещеры, деревни, мобы, инвентарь, крафт, сундуки, печки, жидкости, чат, LAN/Direct IP multiplayer и dedicated server.
 
-Текущая версия документации: `v0.2 Final`.
+Текущая стабильная база: `v0.2 Final`. Проект продолжается: следующий ориентир - `TinyCraft v0.3`, где основной фокус на более живом gameplay и понятном multiplayer через VPS.
 
-`v0.2 Final` - последний релиз TinyCraft. Разработка проекта завершена; репозиторий оставлен как учебный/экспериментальный Java/LWJGL Minecraft-like проект.
+Лаунчер вынесен в отдельную папку `TinyCraftLauncher/`, чтобы его можно было разрабатывать отдельно, не смешивая с игрой.
 
 ## Скриншоты
 
@@ -20,16 +20,16 @@ TinyCraft - небольшая Java/LWJGL voxel-песочница. В игре 
 
 ## Быстрый старт
 
-Требуется Java 8 или новее. Проект собирается с `--release 8`, поэтому совместим с Java 8 runtime, но запускать его можно и на более свежем JDK.
+Нужна Java 8 или новее. Проект собирается с `--release 8`, поэтому код совместим с Java 8 runtime. Сейчас bundled LWJGL natives рассчитаны на Windows.
 
-Готовый клиентский zip `v0.2 Final` рассчитан на Windows: в `lib/` сейчас лежат только Windows LWJGL natives. Для Linux/macOS нужны соответствующие LWJGL native jars и отдельные launch scripts. Headless dedicated server не использует OpenGL, но все равно требует Java 8+.
+Сборка и запуск игры из исходников:
 
 ```powershell
 javac -encoding UTF-8 --release 8 -cp "lib/*" -d out *.java
 java -cp "out;lib/*" TinyCraft
 ```
 
-На Windows можно использовать готовый запускатель:
+На Windows можно проще:
 
 ```powershell
 .\run-game.bat
@@ -37,7 +37,7 @@ java -cp "out;lib/*" TinyCraft
 
 ## Dedicated Server
 
-`v0.2 Final` стабилизирует headless dedicated server. Он запускает авторитетный `VoxelWorld`, слушает TCP на `0.0.0.0:25566`, принимает обычных клиентов TinyCraft и не создает окно, renderer, GLFW или аудио.
+Dedicated server запускается без OpenGL-окна, renderer, GLFW и аудио. Он слушает TCP-порт `25566` и принимает обычных клиентов TinyCraft.
 
 Запуск из исходников:
 
@@ -52,25 +52,16 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 .\run-server.bat
 ```
 
-Готовую Windows-папку и zip можно собрать одной командой:
+На Linux/VPS:
 
-```powershell
-.\build-release.bat
+```bash
+chmod +x run-server.sh
+./run-server.sh
 ```
 
-Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
+Подробная инструкция для VPS лежит в `docs/SERVER_HOSTING_RU.md`.
 
-Отдельно лаунчер собирается так:
-
-```powershell
-.\build-launcher.bat
-```
-
-Готовый `TinyCraftLauncher-windows.zip` будет лежать в `release/`.
-
-При первом запуске рядом с проектом создается локальный `server.properties`. CLI-аргументы перекрывают значения из файла. Мир сервера хранится в `saves/<world>` и переиспользуется при следующих запусках с тем же `world`.
-
-Основные настройки:
+Основные настройки сервера создаются в локальном `server.properties`:
 
 ```properties
 port=25566
@@ -84,204 +75,68 @@ allowCheats=false
 viewDistance=8
 ```
 
-Команды консоли сервера:
+## Сборка релизов
 
-| Команда | Что делает |
-| --- | --- |
-| `help` | Показывает список команд. |
-| `status` | Показывает uptime и число игроков. |
-| `list` | Показывает подключенных игроков. |
-| `say <сообщение>` | Отправляет сообщение всем клиентам. |
-| `kick <player> [reason]` | Отключает игрока. |
-| `save` | Сохраняет мир и подключенных игроков. |
-| `stop` | Сохраняет мир и останавливает сервер. |
+Собрать Windows ZIP игры:
 
-## Возможности v0.2 Final
+```powershell
+.\build-release.bat
+```
 
-- Dedicated server без OpenGL-окна.
-- Direct IP/LAN-подключение к integrated host или dedicated server.
-- Сервер авторитетен по чанкам, блокам, времени, мобам, дропу, чату, позициям игроков и PvP.
-- Server-side MVP для инвентаря, сундуков, печек и верстака через `INVENTORY_SYNC` и `CONTAINER_*` пакеты.
-- Базовая защита протокола: лимиты размеров пакетов, rate limit для частых действий и проверка дистанции `BLOCK_ACTION`.
-- Таблица игроков по Tab с ping, здоровьем и статусом.
-- Multiplayer-команды `/list`, `/ping`, `/msg`, `/kick`, `/give`, `/clear`, `/gamemode`, `/tp`.
-- Синхронизация здоровья игрока, server-side атак мобов и PvP-урона.
-- Выдача подобранных предметов клиенту через серверный `INVENTORY_ADD`.
-- Более явные ошибки при несовместимом протоколе, duplicate UUID, заполненном сервере и timeout.
-- Сохранение server world и network player state между запусками dedicated server.
-- JUnit headless protocol tests без OpenGL.
+Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
+Лаунчер собирается отдельно из `TinyCraftLauncher/`.
 
-## Возможности игры
+## Тесты
 
-- Чанковый voxel-мир с потоковой прогрузкой колонок.
-- Биомы, горы, пляжи, океаны, реки, пещеры, руды и шахты.
-- Деревни, дома, фермы, дороги, жители и простые структуры.
-- Вода, лава, прозрачные блоки, туман и базовое освещение.
-- Выживание, творческий режим, режим наблюдателя, здоровье и голод.
-- Инвентарь, хотбар, крафт, печки, сундуки и верстак.
-- Мобы, дроп, яйца спавна, бой и базовый PvP.
-- Внутриигровой чат с русским вводом, команды и debug overlay.
-
-## Подключение к серверу
-
-1. Запустите `TinyCraftServer` или `run-server.bat`.
-2. Запустите обычный клиент `TinyCraft`.
-3. Откройте "Мультиплеер".
-4. Введите IP сервера. На том же ПК используйте `127.0.0.1`.
-5. Порт оставьте `25566`, если вы не меняли его.
-6. Нажмите "Подключиться".
-
-Для подключения через интернет нужно вручную открыть TCP-порт `25566` в firewall/port-forward или использовать VPN. Встроенного relay, NAT traversal и публичного списка серверов пока нет.
-
-## Тест мультиплеера на одном ПК
-
-Сначала соберите проект:
+Сборка всех исходников:
 
 ```powershell
 javac -encoding UTF-8 --release 8 -cp "lib/*" -d out *.java
 ```
 
-Headless protocol tests:
+Headless-тесты протокола и server-side логики:
 
 ```powershell
 .\run-tests.bat
 ```
 
-Окно 1, сервер:
+## Что лежит в папке
 
-```powershell
-java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
-```
+- `TinyCraft.java` - главный клиент игры: меню, игровой loop, ввод, HUD, интеграция мира, renderer и multiplayer.
+- `VoxelWorld.java`, `WorldGenerator.java`, `RegionStorage.java` - мир, генерация, чанки, сохранения.
+- `OpenGlRenderer.java`, `UiRenderer.java`, `SkyRenderer.java`, `WaterRenderer.java` - отрисовка мира и интерфейса.
+- `InventorySystem.java`, `GameData.java`, `Blocks.java` - предметы, блоки, инвентарь, общие игровые данные.
+- `TinyCraftServer.java`, `GameServer.java`, `ServerProperties.java`, `ServerAccessList.java` - dedicated server и его настройки.
+- `MultiplayerManager.java`, `MultiplayerProtocol.java`, `NetworkConnection.java` - сетевой код и протокол.
+- `assets/`, `sounds/`, `lib/` - ресурсы и зависимости.
+- `tests/` - JUnit/headless-тесты.
+- `docs/` - карта кода, чеклисты, VPS-инструкция и скриншоты.
+- `out/`, `build/`, `dist/`, `release/`, `*.class`, `logs/`, `saves/` - локальные результаты сборки/запуска; они не являются исходниками.
 
-Окно 2, клиент:
+## Полезные документы
 
-```powershell
-java -cp "out;lib/*" TinyCraft
-```
+- `ROADMAP.md` - ближайший план развития игры и сервера.
+- `docs/CODE_OVERVIEW_RU.md` - карта кода: с какого файла начинать и где искать частые баги.
+- `docs/QA_CHECKLIST_RU.md` - ручной чеклист проверки.
+- `docs/SERVER_HOSTING_RU.md` - как поднять сервер на VPS.
+- `TinyCraftLauncher/` - отдельная папка лаунчера с собственным запуском и сборкой.
+- `FAQ.md` и `KNOWN_ISSUES.md` - вопросы, ограничения и известные проблемы.
 
-Проверка:
+## Возможности v0.2 Final
 
-- Клиент видит мир сервера.
-- Сообщения в чате доходят до сервера и клиентов.
-- Русский текст в чате отображается корректно.
-- Установка и ломание блоков синхронизируются.
-- Tab показывает список игроков и ping.
-- `/list`, `/ping`, `/msg` работают в multiplayer-чате.
-- `save` и `stop` на сервере сохраняют мир.
+- Singleplayer survival/creative/spectator.
+- Чанковый voxel-мир с биомами, горами, пляжами, океанами, реками, пещерами, рудами и шахтами.
+- Деревни, дома, фермы, дороги, жители и простые структуры.
+- Инвентарь, хотбар, крафт, сундуки, печки и верстак.
+- Мобы, дроп, яйца спавна, здоровье, голод, бой и базовый PvP.
+- Чат с русским вводом, команды и debug overlay.
+- LAN/Direct IP подключение к integrated host или dedicated server.
+- Server-side синхронизация блоков, чанков, игроков, мобов, здоровья, дропа, инвентаря и containers.
+- Таблица игроков по Tab с ping, здоровьем и статусом.
 
-Если две копии клиента используют один и тот же `profile.properties`, сервер отклонит вторую как `Duplicate player uuid`. Для теста двух клиентов на одном ПК используйте отдельную рабочую папку или отдельный `profile.properties`.
+## Ограничения
 
-## Сетевой протокол
-
-- Транспорт: чистый TCP без сторонних сетевых библиотек.
-- Framing: `int length` + `byte packetId` + payload через `DataInputStream` и `DataOutputStream`.
-- `MAGIC = TCMP`.
-- `VERSION = 7` в v0.2 Final.
-- Порт по умолчанию: `25566`.
-
-| ID | Пакет | Назначение |
-| --- | --- | --- |
-| 1 | `HELLO` | Версия протокола, UUID и ник клиента. |
-| 2 | `WELCOME` | Seed, terrain preset, позиция спавна и время мира. |
-| 3 | `PLAYER_SPAWN` | Появление удаленного игрока. |
-| 4 | `PLAYER_STATE` | Позиция, поворот, предмет в руке, флаги и здоровье. |
-| 5 | `PLAYER_DESPAWN` | Удаление игрока. |
-| 6 | `CHAT` | Сообщения чата. |
-| 7 | `CHUNK_REQUEST` | Запрос колонки чанка. |
-| 8 | `CHUNK_DATA` | Данные колонки мира. |
-| 9 | `BLOCK_ACTION` | Запрос ломания или установки блока. |
-| 10 | `BLOCK_UPDATE` | Авторитетное изменение блока. |
-| 11 | `WORLD_TIME` | Синхронизация времени. |
-| 12 | `MOB_SNAPSHOT` | Снимок состояния мобов. |
-| 13 | `DROPPED_ITEM_SNAPSHOT` | Снимок выпавших предметов. |
-| 14 | `DISCONNECT` | Отключение с причиной. |
-| 15 | `PLAYER_ATTACK` | Запрос атаки игрока. |
-| 16 | `PLAYER_HEALTH` | Авторитетное здоровье игрока. |
-| 17 | `PING` | Ping request. |
-| 18 | `PONG` | Ping response. |
-| 19 | `PLAYER_LIST` | Список игроков для Tab overlay. |
-| 20 | `COMMAND` | Multiplayer-команды клиента. |
-| 21 | `INVENTORY_ADD` | Серверная выдача подобранного item. |
-| 22 | `MOB_ATTACK` | Запрос атаки моба клиентом. |
-| 23 | `SERVER_PLAYER_STATE` | Серверная коррекция позиции, режима игры и здоровья клиента. |
-| 24 | `INVENTORY_SYNC` | Полное авторитетное состояние инвентаря игрока. |
-| 25 | `CONTAINER_OPEN_REQUEST` | Запрос клиента на открытие контейнера. |
-| 26 | `CONTAINER_OPEN` | Подтверждение открытия контейнера и начальный snapshot. |
-| 27 | `CONTAINER_CLICK` | Клик клиента по слоту активного server-side окна. |
-| 28 | `CONTAINER_CLOSE` | Закрытие активного server-side окна. |
-| 29 | `CONTAINER_UPDATE` | Обновление содержимого контейнера после принятого действия. |
-| 30 | `ITEM_DROP` | Запрос клиента на выбрасывание предмета из хотбара. |
-
-## Управление
-
-- `WASD` - движение
-- `Space` - прыжок
-- `Shift` - присесть
-- `Ctrl` - бег
-- Левая кнопка мыши - атака или ломание блока
-- Правая кнопка мыши - взаимодействие или установка блока
-- `T` - чат
-- `Tab` - список игроков в multiplayer
-- `E` - инвентарь
-- `Esc` - меню паузы
-- `F1` - скрыть или показать интерфейс
-- `F3` - debug overlay
-- `F4` - переключение режима игры
-- `F5` - вид от третьего лица
-- `1`-`9` - выбор слота хотбара
-
-## Команды
-
-Команды вводятся в игровом чате.
-
-| Команда | Что делает |
-| --- | --- |
-| `/list` | Показывает игроков в multiplayer-сессии. |
-| `/ping` | Показывает текущий ping. |
-| `/msg <player> <message>` | Отправляет личное сообщение. |
-| `/kick <player> [reason]` | Отключает игрока, если команду выполняет host. |
-| `/tp <player> <x> <y> <z>` | Телепортирует игрока на dedicated server; в singleplayer используется локальная форма без `<player>`. |
-| `/time set day` | Устанавливает день. |
-| `/time set night` | Устанавливает ночь. |
-| `/gamemode <survival|creative|spectator> <player>` | Меняет режим игрока на dedicated server; в singleplayer используется локальная форма без `<player>`. |
-| `/clear <player>` | Очищает инвентарь игрока на dedicated server. |
-| `/say <сообщение>` | Выводит сообщение от сервера. |
-| `/give <id|tinycraft:name> <amount>` | Выдает предмет или блок себе из чата на dedicated server, если игрок op. |
-| `give <player> <id|tinycraft:name> <amount>` | Выдает предмет или блок игроку из server console. Пример: `give Player2873 dirt 64`. |
-| `/spawnzombie` | Спавнит зомби рядом с игроком. |
-| `/seed` | Показывает seed мира. |
-| `/locate village` | Ищет ближайшую деревню. |
-| `/locate mineshaft` | Ищет ближайшую шахту. |
-| `/locate biome <название>` | Ищет биом. |
-| `/place structure list` | Показывает список структур. |
-| `/place structure <name> [rotation]` | Ставит структуру рядом с игроком. |
-| `/whereami` | Показывает debug-позицию. |
-| `/probe <x> <z>` | Показывает terrain/debug-информацию. |
-| `/terrain <x> <z>` | То же, что `/probe`. |
-| `/heighttest` | Запускает debug-проверку высот. |
-| `/blockinfo` | Показывает информацию о блоке под прицелом. |
-
-## Структура проекта
-
-- `TinyCraft.java` - основной игровой цикл, UI и интеграция подсистем.
-- `TinyCraftServer.java` - headless entrypoint dedicated server.
-- `GameServer.java` - серверный tick loop, console commands и сохранение server world.
-- `VoxelWorld.java` - мир, чанки, блоки, мобы, сохранения и mirror-режим.
-- `OpenGlRenderer.java` - OpenGL-рендер мира и интерфейса.
-- `MultiplayerManager.java` - LAN/dedicated host, клиент, сетевой tick и обработка пакетов.
-- `MultiplayerProtocol.java` - ID пакетов и framing TCP-протокола.
-- `LocalProfile.java` - локальный UUID/ник игрока.
-- `ChatSystem.java` - чат и команды.
-- `GameData.java` - основные константы меню/настроек и игровые данные.
-
-## Документация
-
-- [CHANGELOG](CHANGELOG.md) - история версий.
-- [KNOWN_ISSUES](KNOWN_ISSUES.md) - известные проблемы.
-- [ROADMAP](ROADMAP.md) - план разработки.
-- [FAQ](FAQ.md) - частые вопросы.
-- [LICENSE](LICENSE) - MIT License.
-
-## Лицензия
-
-Проект распространяется по лицензии MIT.
+- Встроенного relay/NAT traversal пока нет.
+- Официального публичного списка серверов пока нет.
+- Текущие LWJGL natives в `lib/` рассчитаны на Windows.
+- Совместимость сохранений между будущими версиями нужно проверять отдельно.

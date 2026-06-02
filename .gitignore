@@ -1,10 +1,13 @@
 # Java build output
 out/
-*.class
+build/
+dist/
 release/
+*.class
 
-# Local game data
+# Local game/server data
 saves/
+logs/
 options.txt
 profile.properties
 server.properties
@@ -12,23 +15,31 @@ ops.json
 whitelist.json
 banned-players.json
 
-# Generated runtime assets
+# Generated/runtime assets
 terrain.png
+
+# Launcher packaging helpers
+launcher-update.txt
+TinyCraftLauncher/
 
 # IDE/editor files
 .idea/
-.vscode/
-!.vscode/
-!.vscode/settings.json
 .vs/
 .settings/
 .classpath
 .project
 *.iml
 
+# Keep the shared VS Code workspace helpers
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
 # OS files
 Thumbs.db
 Desktop.ini
+*.lnk
 
 # Logs/temp
 *.log
