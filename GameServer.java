@@ -378,7 +378,8 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
                 return (byte) value;
             }
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException exception) {
+            System.err.println("Failed to parse block ID from server command '" + query + "': " + exception);
         }
         String localName = query.startsWith("tinycraft:") ? query.substring("tinycraft:".length()) : query;
         String namespaced = localName.startsWith("minecraft:") ? localName : "minecraft:" + localName;
@@ -407,7 +408,8 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         if (uuid == null) {
             try {
                 uuid = UUID.fromString(token);
-            } catch (IllegalArgumentException ignored) {
+            } catch (IllegalArgumentException exception) {
+                System.err.println("Failed to parse player UUID from server command '" + token + "': " + exception);
             }
         }
         if (name == null && uuid == null) {

@@ -1463,7 +1463,8 @@ final class VoxelWorld implements StructureTemplates.Target {
                     output.writeDouble(furnace.cookTotal);
                 }
             }
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to save world containers to " + worldDirectory.resolve("containers.dat") + ": " + exception);
         }
     }
 
@@ -1621,7 +1622,8 @@ final class VoxelWorld implements StructureTemplates.Target {
                     output.writeDouble(mob.babyAge);
                 }
             }
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to save world mobs to " + worldDirectory.resolve("mobs.dat") + ": " + exception);
         }
     }
 

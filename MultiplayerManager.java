@@ -210,7 +210,8 @@ final class MultiplayerManager {
         if (serverSocket != null) {
             try {
                 serverSocket.close();
-            } catch (IOException ignored) {
+            } catch (IOException exception) {
+                System.err.println("Failed to close the multiplayer server socket: " + exception);
             }
             serverSocket = null;
         }
@@ -601,7 +602,8 @@ final class MultiplayerManager {
             if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
                 return (byte) value;
             }
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException exception) {
+            System.err.println("Failed to parse block ID from multiplayer command '" + query + "': " + exception);
         }
         String localName = query.startsWith("tinycraft:") ? query.substring("tinycraft:".length()) : query;
         String namespaced = localName.startsWith("minecraft:") ? localName : "minecraft:" + localName;
@@ -2659,7 +2661,8 @@ final class MultiplayerManager {
             connection.open = false;
             try {
                 connection.socket.close();
-            } catch (IOException ignored) {
+            } catch (IOException exception) {
+                System.err.println("Failed to close a multiplayer client socket: " + exception);
             }
         }
     }

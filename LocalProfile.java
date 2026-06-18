@@ -56,7 +56,8 @@ final class LocalProfile {
         properties.setProperty("name", name);
         try (OutputStream output = Files.newOutputStream(path)) {
             properties.store(output, "TinyCraft local multiplayer profile");
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to save local multiplayer profile to " + path + ": " + exception);
         }
     }
 

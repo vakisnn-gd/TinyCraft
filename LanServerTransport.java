@@ -30,7 +30,8 @@ final class LanServerTransport {
         if (serverSocket != null) {
             try {
                 serverSocket.close();
-            } catch (IOException ignored) {
+            } catch (IOException exception) {
+                System.err.println("Failed to close the LAN server socket: " + exception);
             }
             serverSocket = null;
         }

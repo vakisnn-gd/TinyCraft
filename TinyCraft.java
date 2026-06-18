@@ -4247,11 +4247,13 @@ public class TinyCraft implements MultiplayerManager.Listener {
                         WorldMetadata metadata = readWorldMetadata(directory);
                         long lastModified = worldLastModified(directory);
                         availableWorlds.add(new WorldInfo(directory.getFileName().toString(), directory, metadata.seed, lastModified, metadata.gameMode, metadata.difficulty, metadata.terrainPreset));
-                    } catch (IOException | NumberFormatException ignored) {
+                    } catch (IOException | NumberFormatException exception) {
+                        System.err.println("Failed to read world metadata from " + directory + ": " + exception);
                     }
                 });
             }
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to list saved worlds in " + savesRoot + ": " + exception);
         }
 
         availableWorlds.sort((left, right) -> compareWorldInfoByName(right, left));
@@ -4429,7 +4431,8 @@ public class TinyCraft implements MultiplayerManager.Listener {
         }
         try {
             writeWorldMetadata(worldInfo.directory, worldInfo.seed, currentGameModeIndex(), currentWorldDifficulty, worldInfo.terrainPreset);
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to save world metadata for " + worldInfo.directory + ": " + exception);
         }
     }
 
@@ -4758,7 +4761,8 @@ public class TinyCraft implements MultiplayerManager.Listener {
                 hoveredBlock = null;
             }
             deleteDirectory(worldInfo.directory);
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to delete world directory " + worldInfo.directory + ": " + exception);
         }
         refreshAvailableWorlds();
     }
@@ -4789,7 +4793,8 @@ public class TinyCraft implements MultiplayerManager.Listener {
             stream.sorted(Comparator.reverseOrder()).forEach(path -> {
                 try {
                     Files.deleteIfExists(path);
-                } catch (IOException ignored) {
+                } catch (IOException exception) {
+                    System.err.println("Failed to delete world path " + path + ": " + exception);
                 }
             });
         }

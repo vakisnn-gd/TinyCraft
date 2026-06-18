@@ -546,7 +546,8 @@ final class RuntimePaths {
             if (classRoot != null) {
                 return classRoot;
             }
-        } catch (Exception ignored) {
+        } catch (Exception exception) {
+            System.err.println("Failed to resolve the TinyCraft project root from the runtime class path: " + exception);
         }
 
         return cwd;
@@ -649,7 +650,8 @@ final class Settings {
             + "language=" + language + System.lineSeparator();
         try {
             java.nio.file.Files.write(RuntimePaths.resolve("options.txt"), text.getBytes(StandardCharsets.UTF_8));
-        } catch (java.io.IOException ignored) {
+        } catch (java.io.IOException exception) {
+            System.err.println("Failed to save game options to options.txt: " + exception);
         }
     }
 

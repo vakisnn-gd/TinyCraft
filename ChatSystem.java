@@ -339,7 +339,8 @@ final class ChatSystem {
                 byte item = (byte) rawId;
                 return isHiddenGiveItem(item) ? null : item;
             }
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException exception) {
+            System.err.println("Failed to parse item ID from chat command '" + query + "': " + exception);
         }
         return null;
     }

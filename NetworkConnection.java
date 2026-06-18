@@ -22,7 +22,8 @@ final class NetworkConnection {
         open = false;
         try {
             socket.close();
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            System.err.println("Failed to close the network connection socket: " + exception);
         }
     }
 }
