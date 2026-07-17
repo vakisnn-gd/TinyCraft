@@ -15,7 +15,11 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -49,10 +53,12 @@ import static org.lwjgl.opengl.GL11.GL_LINE_LOOP;
 import static org.lwjgl.opengl.GL11.GL_MODELVIEW;
 import static org.lwjgl.opengl.GL11.GL_MODELVIEW_MATRIX;
 import static org.lwjgl.opengl.GL11.GL_NO_ERROR;
+import static org.lwjgl.opengl.GL11.GL_ONE;
 import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
 import static org.lwjgl.opengl.GL11.GL_PROJECTION;
 import static org.lwjgl.opengl.GL11.GL_PROJECTION_MATRIX;
 import static org.lwjgl.opengl.GL11.GL_QUADS;
+import static org.lwjgl.opengl.GL11.GL_RENDERER;
 import static org.lwjgl.opengl.GL11.GL_REPEAT;
 import static org.lwjgl.opengl.GL11.GL_RGBA;
 import static org.lwjgl.opengl.GL11.GL_SMOOTH;
@@ -66,12 +72,15 @@ import static org.lwjgl.opengl.GL11.GL_TRIANGLES;
 import static org.lwjgl.opengl.GL11.GL_UNPACK_ALIGNMENT;
 import static org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE;
 import static org.lwjgl.opengl.GL11.GL_UNSIGNED_INT;
+import static org.lwjgl.opengl.GL11.GL_VENDOR;
+import static org.lwjgl.opengl.GL11.GL_VERSION;
 import static org.lwjgl.opengl.GL11.glBegin;
 import static org.lwjgl.opengl.GL11.glBindTexture;
 import static org.lwjgl.opengl.GL11.glBlendFunc;
 import static org.lwjgl.opengl.GL11.glClear;
 import static org.lwjgl.opengl.GL11.glClearDepth;
 import static org.lwjgl.opengl.GL11.glClearColor;
+import static org.lwjgl.opengl.GL11.glCopyTexSubImage2D;
 import static org.lwjgl.opengl.GL11.glColor3f;
 import static org.lwjgl.opengl.GL11.glColor4f;
 import static org.lwjgl.opengl.GL11.glDepthFunc;
@@ -91,6 +100,7 @@ import static org.lwjgl.opengl.GL11.glOrtho;
 import static org.lwjgl.opengl.GL11.glPixelStorei;
 import static org.lwjgl.opengl.GL11.glPopMatrix;
 import static org.lwjgl.opengl.GL11.glPushMatrix;
+import static org.lwjgl.opengl.GL11.glReadPixels;
 import static org.lwjgl.opengl.GL11.glRotatef;
 import static org.lwjgl.opengl.GL11.glRotated;
 import static org.lwjgl.opengl.GL11.glScalef;
@@ -106,6 +116,8 @@ import static org.lwjgl.opengl.GL11.GL_NEAREST;
 import static org.lwjgl.opengl.GL11.glDeleteTextures;
 import static org.lwjgl.opengl.GL11.glGetError;
 import static org.lwjgl.opengl.GL11.glGetFloatv;
+import static org.lwjgl.opengl.GL11.glGetString;
+import static org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE;
 import static org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER;
 import static org.lwjgl.opengl.GL15.GL_STATIC_DRAW;
 import static org.lwjgl.opengl.GL15.glBindBuffer;
@@ -142,7 +154,8 @@ import static org.lwjgl.glfw.GLFW.glfwGetFramebufferSize;
 
 final class OpenGlRenderer {
     private static final int INTS_PER_VERTEX = 2;
-    private static final int BYTES_PER_VERTEX = INTS_PER_VERTEX * Integer.BYTES;
+    private static final int GPU_INTS_PER_VERTEX = 3;
+    private static final int GPU_BYTES_PER_VERTEX = GPU_INTS_PER_VERTEX * Integer.BYTES;
     private static final int VERTICES_PER_QUAD = 6;
     private static final int AO_FULL_BRIGHT_PACKED = 0xFF;
     private static final int AO_FLIP_DIAGONAL = 1 << 8;
@@ -154,11 +167,26 @@ final class OpenGlRenderer {
     private static final double PACKED_VERTEX_BIAS = 0.25;
     private static final double PACKED_VERTEX_SCALE = 32.0;
     private static final int PACKED_VERTEX_MAX = 1023;
+    private static final int PACKED_REGION_COORD_MAX = 8191;
+    private static final int PACKED_REGION_Z_LOW_MAX = 511;
     private static final int MIN_CHUNK_UPLOADS_PER_FRAME = 1;
-    private static final int MAX_CHUNK_UPLOADS_PER_FRAME = 4;
+    private static final int MAX_CHUNK_UPLOADS_PER_FRAME = 16;
+    private static final int MAX_CATCH_UP_CHUNK_UPLOADS_PER_FRAME = 12;
+    private static final int OPAQUE_RENDER_REGION_SIZE_CHUNKS = 8;
+    private static final int MAX_OPAQUE_REGION_UPLOADS_PER_FRAME = 1;
+    private static final long OPAQUE_REGION_REVEAL_NANOS = 850_000_000L;
     private static final int MAX_IMMEDIATE_CHUNK_UPLOADS_PER_FRAME = 8;
     private static final int MAX_BACKLOG_CHUNK_UPLOADS_PER_FRAME = 24;
-    private static final int MAX_PENDING_MESH_BACKLOG = 1536;
+    private static final int MESH_THREAD_COUNT = GameConfig.CHUNK_GENERATION_THREADS;
+    private static final int MAX_MESH_BUILDS_IN_FLIGHT = MESH_THREAD_COUNT * 2;
+    private static final int MAX_CHUNK_DISCOVERY_PER_FRAME = 512;
+    private static final int MAX_DIRTY_CANDIDATES_PER_FRAME = 512;
+    private static final int INITIAL_MESH_BUILD_RADIUS = 12;
+    private static final int MAX_PENDING_DIRTY_MESH_BUILDS = 2048;
+    private static final int MAX_QUEUED_MESH_BUILD_CANDIDATES = 512;
+    private static final long NORMAL_MESH_UPLOAD_BUDGET_NANOS = 2_000_000L;
+    private static final long LOW_FPS_MESH_UPLOAD_BUDGET_NANOS = 1_500_000L;
+    private static final long BACKLOG_MESH_UPLOAD_BUDGET_NANOS = 4_000_000L;
     private static final double LIQUID_SURFACE_Z_OFFSET = 0.01;
     private static final double CAMERA_NEAR_PLANE = 0.08;
     private static final double CAMERA_FAR_PADDING = 64.0;
@@ -169,26 +197,41 @@ final class OpenGlRenderer {
     private static final int ATLAS_COLUMNS = 4;
     private static final int ATLAS_ROWS = 4;
     private static final int MENU_PANORAMA_FACE_COUNT = 6;
+    private static final int MENU_PANORAMA_CAPTURE_SIZE = 1024;
+    private static final DateTimeFormatter SCREENSHOT_TIME =
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS", Locale.ROOT);
 
     private final VoxelWorld world;
     private final SkyRenderer skyRenderer;
     private final WaterRenderer waterRenderer;
     private final UiRenderer uiRenderer;
     private final HashMap<Long, ChunkMesh> chunkMeshes = new HashMap<>();
+    private final HashMap<Long, OpaqueRenderRegion> opaqueRenderRegions = new HashMap<>();
+    private final ArrayDeque<Long> pendingOpaqueRegionBuilds = new ArrayDeque<>();
+    private final HashSet<Long> pendingOpaqueRegionBuildKeys = new HashSet<>();
     private final HashSet<Long> dirtyChunkMeshes = new HashSet<>();
     private final HashSet<Long> immediateChunkMeshes = new HashSet<>();
     private final ArrayList<ChunkMesh> transparentChunkPass = new ArrayList<>();
     private final ArrayList<Long> staleMeshKeys = new ArrayList<>();
     private final ArrayList<Chunk> loadedChunkSnapshot = new ArrayList<>();
+    private final ArrayDeque<Long> pendingDirtyMeshBuilds = new ArrayDeque<>();
+    private final HashSet<Long> pendingDirtyMeshBuildKeys = new HashSet<>();
     private final PriorityQueue<MeshBuildCandidate> meshBuildQueue = new PriorityQueue<>();
     private final HashSet<Long> queuedMeshBuildKeys = new HashSet<>();
-    private final ConcurrentHashMap<Long, Boolean> meshBuildsInFlight = new ConcurrentHashMap<>();
+    private final MeshBuildRevisionTracker meshBuildRevisions = new MeshBuildRevisionTracker();
+    private final MeshBuildRadiusController meshBuildRadiusController = new MeshBuildRadiusController(INITIAL_MESH_BUILD_RADIUS);
+    // Value is the world/mesh epoch that owns the task. This prevents an old
+    // worker from clearing a newer task with the same chunk key after a world change.
+    private final ConcurrentHashMap<Long, Integer> meshBuildsInFlight = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Boolean> meshBuildsReady = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Long> meshBuildCooldownUntilNanos = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<MeshBuildResult> completedImmediateMeshBuilds = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<MeshBuildResult> completedMeshBuilds = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<OpaqueRegionBuildResult> completedOpaqueRegionBuilds = new ConcurrentLinkedQueue<>();
     private final ExecutorService meshExecutor = createMeshExecutor();
+    private final ExecutorService opaqueRegionExecutor = createOpaqueRegionExecutor();
     private final LinkedHashMap<String, TextTexture> textTextures = new LinkedHashMap<>(128, 0.75f, true);
+    private final DebugInfo debugInfo = new DebugInfo();
     private final Frustum chunkFrustum = new Frustum();
     private final FloatBuffer fogColorScratch = BufferUtils.createFloatBuffer(4);
 
@@ -197,6 +240,9 @@ final class OpenGlRenderer {
     private int terrainTextureId;
     private final int[] menuPanoramaTextureIds = new int[MENU_PANORAMA_FACE_COUNT];
     private boolean menuPanoramaReady;
+    private int blurredWorldTextureId;
+    private int blurredWorldTextureWidth;
+    private int blurredWorldTextureHeight;
     private int uploadProbeVboId;
     private int chunkShaderProgram;
     private int chunkShaderViewProjectionLocation = -1;
@@ -210,6 +256,7 @@ final class OpenGlRenderer {
     private int chunkShaderFogDensityLocation = -1;
     private int chunkShaderBrightnessLocation = -1;
     private int chunkShaderRevealLocation = -1;
+    private int chunkShaderRegionMeshLocation = -1;
     private final FloatBuffer matrixScratch = BufferUtils.createFloatBuffer(16);
     private final float[] modelViewMatrix = new float[16];
     private final float[] projectionMatrix = new float[16];
@@ -224,10 +271,15 @@ final class OpenGlRenderer {
     private boolean resourcesReady;
     private boolean vaoSupported;
     private double debugFps;
-    private int debugUploadedMeshesLastFrame;
-    private int debugRejectedMeshVersionsLastFrame;
     private double fpsSampleTime;
     private int fpsSampleFrames;
+    private int loadedChunkDiscoveryCursor;
+    private int lastMeshPriorityChunkX = Integer.MIN_VALUE;
+    private int lastMeshPriorityChunkZ = Integer.MIN_VALUE;
+    private long debugMeshUploadNanosLastFrame;
+    private int debugOpaqueRegionDrawCallsLastFrame;
+    private int debugTransparentChunkDrawCallsLastFrame;
+    private int opaqueRegionBuildsInFlight;
     private double renderCameraX;
     private double renderCameraY;
     private double renderCameraZ;
@@ -259,13 +311,21 @@ final class OpenGlRenderer {
     }
 
     private static ExecutorService createMeshExecutor() {
-        int threads = Math.max(1, Math.min(GameConfig.CHUNK_GENERATION_THREADS, Runtime.getRuntime().availableProcessors() - 1));
         ThreadFactory factory = runnable -> {
             Thread thread = new Thread(runnable, "tinycraft-mesh-worker");
             thread.setDaemon(true);
             return thread;
         };
-        return Executors.newFixedThreadPool(threads, factory);
+        return Executors.newFixedThreadPool(MESH_THREAD_COUNT, factory);
+    }
+
+    private static ExecutorService createOpaqueRegionExecutor() {
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(runnable, "tinycraft-opaque-region-worker");
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newSingleThreadExecutor(factory);
     }
 
     void init() {
@@ -339,7 +399,7 @@ final class OpenGlRenderer {
         if (isPointInsideSettingsSlider(cursorX, cursorY, 4, optionsFpsSliderY(uiScale), uiScale)) {
             return 4;
         }
-        if (isPointInsideSettingsSlider(cursorX, cursorY, 5, optionsInventoryUiSliderY(uiScale), uiScale)) {
+        if (isPointInsideSettingsSlider(cursorX, cursorY, 5, optionsGuiScaleSliderY(uiScale), uiScale)) {
             return 5;
         }
         return -1;
@@ -403,7 +463,7 @@ final class OpenGlRenderer {
         return optionsRowY(1, uiScale);
     }
 
-    private float optionsInventoryUiSliderY(float uiScale) {
+    private float optionsGuiScaleSliderY(float uiScale) {
         return optionsRowY(2, uiScale);
     }
 
@@ -555,9 +615,11 @@ final class OpenGlRenderer {
             }
         }
         float secondRowY = 282.0f * uiScale;
-        float secondRowWidth = buttonWidth * 2.0f + gap;
-        if (mouseX >= startX && mouseX <= startX + secondRowWidth && mouseY >= secondRowY && mouseY <= secondRowY + buttonHeight) {
-            return 2;
+        for (int i = 0; i < 2; i++) {
+            float x = startX + i * (buttonWidth + gap);
+            if (mouseX >= x && mouseX <= x + buttonWidth && mouseY >= secondRowY && mouseY <= secondRowY + buttonHeight) {
+                return i + 2;
+            }
         }
         return -1;
     }
@@ -615,6 +677,14 @@ final class OpenGlRenderer {
             return;
         }
         glViewport(0, 0, framebufferWidth, framebufferHeight);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (menuPanoramaReady) {
+            glDisable(GL_CULL_FACE);
+            setupProjection();
+            setupMenuPanoramaSkyboxCamera(1.0 / 60.0);
+            renderMenuPanoramaSkybox();
+            renderBlurredWorldBackground();
+        }
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_TEXTURE_2D);
         glMatrixMode(GL_PROJECTION);
@@ -625,8 +695,12 @@ final class OpenGlRenderer {
         glPushMatrix();
         glLoadIdentity();
 
-        drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.20f, 0.28f, 0.38f, 1.0f);
-        drawRect(0.0f, framebufferHeight * 0.56f, framebufferWidth, framebufferHeight * 0.44f, 0.08f, 0.16f, 0.10f, 0.40f);
+        if (menuPanoramaReady) {
+            drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.02f, 0.025f, 0.03f, 0.48f);
+        } else {
+            drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.20f, 0.28f, 0.38f, 1.0f);
+            drawRect(0.0f, framebufferHeight * 0.56f, framebufferWidth, framebufferHeight * 0.44f, 0.08f, 0.16f, 0.10f, 0.40f);
+        }
         float uiScale = Math.max(1.0f, getUiScale());
         drawCenteredShadowText(framebufferHeight * 0.45f, uiScale * 1.15f, message, 0.96f, 0.96f, 0.96f);
         if (detail != null && !detail.isEmpty()) {
@@ -650,8 +724,12 @@ final class OpenGlRenderer {
             unloadChunkMesh(mesh);
         }
         chunkMeshes.clear();
+        clearOpaqueRenderRegions();
         dirtyChunkMeshes.clear();
+        meshBuildRevisions.clear();
         immediateChunkMeshes.clear();
+        pendingDirtyMeshBuilds.clear();
+        pendingDirtyMeshBuildKeys.clear();
         meshBuildQueue.clear();
         queuedMeshBuildKeys.clear();
         meshBuildsInFlight.clear();
@@ -659,8 +737,13 @@ final class OpenGlRenderer {
         meshBuildCooldownUntilNanos.clear();
         completedImmediateMeshBuilds.clear();
         completedMeshBuilds.clear();
+        completedOpaqueRegionBuilds.clear();
         staleMeshKeys.clear();
         transparentChunkPass.clear();
+        loadedChunkDiscoveryCursor = 0;
+        lastMeshPriorityChunkX = Integer.MIN_VALUE;
+        lastMeshPriorityChunkZ = Integer.MIN_VALUE;
+        meshBuildRadiusController.reset();
     }
 
     void rebuildChunksAroundBlock(int blockX, int blockZ) {
@@ -699,28 +782,12 @@ final class OpenGlRenderer {
             rebuildChunksAroundBlock(blockX, blockZ);
             return;
         }
-        int chunkX = Math.floorDiv(blockX, GameConfig.CHUNK_SIZE);
-        int chunkY = GameConfig.sectionIndexForY(blockY);
-        int chunkZ = Math.floorDiv(blockZ, GameConfig.CHUNK_SIZE);
-        markChunkDirty(chunkX, chunkY, chunkZ, immediate);
-        int localX = Math.floorMod(blockX, GameConfig.CHUNK_SIZE);
-        int localY = GameConfig.localYForWorldY(blockY);
-        int localZ = Math.floorMod(blockZ, GameConfig.CHUNK_SIZE);
-        if (localX == 0) {
-            markChunkDirty(chunkX - 1, chunkY, chunkZ, immediate);
-        } else if (localX == GameConfig.CHUNK_SIZE - 1) {
-            markChunkDirty(chunkX + 1, chunkY, chunkZ, immediate);
-        }
-        if (localZ == 0) {
-            markChunkDirty(chunkX, chunkY, chunkZ - 1, immediate);
-        } else if (localZ == GameConfig.CHUNK_SIZE - 1) {
-            markChunkDirty(chunkX, chunkY, chunkZ + 1, immediate);
-        }
-        if (localY == 0 && chunkY > 0) {
-            markChunkDirty(chunkX, chunkY - 1, chunkZ, immediate);
-        } else if (localY == GameConfig.CHUNK_SIZE - 1 && chunkY + 1 < GameConfig.WORLD_CHUNKS_Y) {
-            markChunkDirty(chunkX, chunkY + 1, chunkZ, immediate);
-        }
+        ChunkSectionInvalidation.aroundBlock(
+            blockX,
+            blockY,
+            blockZ,
+            (chunkX, chunkY, chunkZ) -> markChunkDirty(chunkX, chunkY, chunkZ, immediate)
+        );
     }
 
     void setChunkBordersEnabled(boolean chunkBordersEnabled) {
@@ -729,13 +796,22 @@ final class OpenGlRenderer {
 
     void markAllChunksDirty() {
         dirtyChunkMeshes.clear();
+        pendingDirtyMeshBuilds.clear();
+        pendingDirtyMeshBuildKeys.clear();
+        meshBuildQueue.clear();
+        queuedMeshBuildKeys.clear();
         world.fillLoadedChunksSnapshot(loadedChunkSnapshot);
         for (Chunk chunk : loadedChunkSnapshot) {
-            dirtyChunkMeshes.add(chunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ));
+            if (!chunk.isEmpty()) {
+                long meshKey = chunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+                meshBuildRevisions.invalidate(meshKey);
+                dirtyChunkMeshes.add(meshKey);
+            }
         }
+        loadedChunkDiscoveryCursor = 0;
     }
 
-    void render(PlayerState player, PlayerInventory inventory, RayHit hoveredBlock, RayHit breakingBlock, double breakingProgress, boolean paused, boolean inventoryOpen, int inventoryScreenMode, ContainerInventory chestContainer, FurnaceBlockEntity furnace, boolean deathScreenActive, int deathSelection, boolean mainMenuActive, int mainMenuScreen, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int mainMenuScrollOffset, String loadedWorldName, boolean showDebugInfo, boolean hideHud, int pauseSelection, boolean gameModeSwitcherActive, int gameModeSelection, byte selectedBlock, int selectedSlot, int creativeTab, int creativeScrollOffset, boolean creativeMode, boolean thirdPersonView, boolean frontThirdPersonView, boolean sprinting, int renderDistanceChunks, int fovDegrees, double timeOfDay, double mouseX, double mouseY, double deltaTime, double partialTicks, ChatSystem chat, boolean showPlayerList, List<PlayerListEntry> playerList) {
+    void render(PlayerState player, PlayerInventory inventory, RayHit hoveredBlock, RayHit breakingBlock, double breakingProgress, boolean paused, boolean inventoryOpen, int inventoryScreenMode, ContainerInventory chestContainer, FurnaceBlockEntity furnace, boolean deathScreenActive, int deathSelection, boolean mainMenuActive, int mainMenuScreen, boolean optionsOpenedFromPause, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, boolean createWorldAllowCheats, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int mainMenuScrollOffset, String loadedWorldName, boolean showDebugInfo, boolean hideHud, int pauseSelection, boolean gameModeSwitcherActive, int gameModeSelection, byte selectedBlock, int selectedSlot, int creativeTab, int creativeScrollOffset, boolean creativeMode, boolean thirdPersonView, boolean frontThirdPersonView, boolean sprinting, int renderDistanceChunks, int fovDegrees, double timeOfDay, double mouseX, double mouseY, double deltaTime, double partialTicks, ChatSystem chat, boolean showPlayerList, List<PlayerListEntry> playerList) {
         if (!resourcesReady || framebufferWidth <= 0 || framebufferHeight <= 0) {
             return;
         }
@@ -750,36 +826,32 @@ final class OpenGlRenderer {
         glDisable(GL_CULL_FACE);
 
         updateCameraEffects(sprinting, fovDegrees, deltaTime);
-        boolean hasLoadedWorldPanorama = loadedWorldName != null && !loadedWorldName.trim().isEmpty();
-        if (mainMenuActive && menuPanoramaReady && !hasLoadedWorldPanorama) {
-            setupProjection();
-            setupMenuPanoramaSkyboxCamera(deltaTime);
-            renderMenuPanoramaSkybox();
-            renderOverlay(player, inventory, hoveredBlock, paused, inventoryOpen, inventoryScreenMode, chestContainer, furnace, deathScreenActive, deathSelection, mainMenuActive, mainMenuScreen, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, showDebugInfo, hideHud, pauseSelection, gameModeSwitcherActive, gameModeSelection, selectedBlock, selectedSlot, creativeTab, creativeScrollOffset, creativeMode, thirdPersonView, renderDistanceChunks, fovDegrees, timeOfDay, mouseX, mouseY, chat, showPlayerList, playerList);
+        boolean blurWorldBackground = shouldBlurWorldBackground(paused, mainMenuActive, mainMenuScreen, optionsOpenedFromPause);
+        boolean menuPanorama = shouldRenderMenuPanorama(mainMenuActive, mainMenuScreen, optionsOpenedFromPause);
+        if (menuPanorama) {
+            if (menuPanoramaReady) {
+                setupProjection();
+                setupMenuPanoramaSkyboxCamera(deltaTime);
+                renderMenuPanoramaSkybox();
+            }
+            renderOverlay(player, inventory, hoveredBlock, paused, inventoryOpen, inventoryScreenMode, chestContainer, furnace, deathScreenActive, deathSelection, mainMenuActive, mainMenuScreen, optionsOpenedFromPause, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldAllowCheats, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, showDebugInfo, hideHud, pauseSelection, gameModeSwitcherActive, gameModeSelection, selectedBlock, selectedSlot, creativeTab, creativeScrollOffset, creativeMode, thirdPersonView, renderDistanceChunks, fovDegrees, timeOfDay, mouseX, mouseY, chat, showPlayerList, playerList);
             logOpenGlError("render menu panorama");
             return;
         }
-        boolean menuPanorama = mainMenuActive && hasLoadedWorldPanorama;
         setupProjection();
-        if (menuPanorama) {
-            setupMenuPanoramaCamera(player, deltaTime);
-        } else {
-            setupCamera(player, thirdPersonView, frontThirdPersonView);
-        }
+        setupCamera(player, thirdPersonView, frontThirdPersonView);
         updateChunkFrustum();
-        if (!paused && (!mainMenuActive || menuPanorama)) {
-            ensureChunkMeshesAroundPlayer(player.x, player.y, player.z, getChunkRenderRadius(player));
+        if (shouldPrepareWorldMeshes(mainMenuActive, optionsOpenedFromPause)) {
+            ensureChunkMeshesAroundPlayer(player.x, player.y, player.z, getMeshBuildRadius(player));
         }
         renderAtmosphere(player, timeOfDay, deltaTime);
         configureFog(player, timeOfDay, renderDistanceChunks);
         renderChunks(player, false);
-        if (!menuPanorama) {
-            renderFallingBlocks(player);
-            renderZombies(player);
-            renderRemotePlayers(player);
-            renderDroppedItems(player, timeOfDay);
-            renderPlayerModel(player, inventory, selectedBlock, thirdPersonView, frontThirdPersonView);
-        }
+        renderFallingBlocks(player);
+        renderZombies(player);
+        renderRemotePlayers(player);
+        renderDroppedItems(player, timeOfDay);
+        renderPlayerModel(player, inventory, selectedBlock, thirdPersonView, frontThirdPersonView);
         renderChunks(player, true);
         if (!mainMenuActive && !thirdPersonView && !frontThirdPersonView && !hideHud && !player.spectatorMode) {
             renderFirstPersonHand3d(player, selectedBlock, breakingBlock != null && breakingProgress > 0.0);
@@ -787,14 +859,197 @@ final class OpenGlRenderer {
         glDisable(GL_FOG);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        if (!mainMenuActive) {
+        if (!mainMenuActive || optionsOpenedFromPause) {
             renderChunkBorders(player);
             renderHoveredOutline(hoveredBlock);
             renderBreakingOverlay(breakingBlock, breakingProgress);
             renderWorldTint(player);
         }
-        renderOverlay(player, inventory, hoveredBlock, paused, inventoryOpen, inventoryScreenMode, chestContainer, furnace, deathScreenActive, deathSelection, mainMenuActive, mainMenuScreen, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, showDebugInfo, hideHud, pauseSelection, gameModeSwitcherActive, gameModeSelection, selectedBlock, selectedSlot, creativeTab, creativeScrollOffset, creativeMode, thirdPersonView, renderDistanceChunks, fovDegrees, timeOfDay, mouseX, mouseY, chat, showPlayerList, playerList);
+        if (shouldUsePanoramaFallbackForWorldBlur(
+            blurWorldBackground, hasResidentChunkMesh(), menuPanoramaReady)) {
+            setupProjection();
+            setupMenuPanoramaSkyboxCamera(deltaTime);
+            renderMenuPanoramaSkybox();
+        }
+        if (blurWorldBackground) {
+            renderBlurredWorldBackground();
+        }
+        renderOverlay(player, inventory, hoveredBlock, paused, inventoryOpen, inventoryScreenMode, chestContainer, furnace, deathScreenActive, deathSelection, mainMenuActive, mainMenuScreen, optionsOpenedFromPause, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldAllowCheats, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, showDebugInfo, hideHud, pauseSelection, gameModeSwitcherActive, gameModeSelection, selectedBlock, selectedSlot, creativeTab, creativeScrollOffset, creativeMode, thirdPersonView, renderDistanceChunks, fovDegrees, timeOfDay, mouseX, mouseY, chat, showPlayerList, playerList);
         logOpenGlError("render");
+    }
+
+    Path captureScreenshot() throws IOException {
+        if (!resourcesReady || framebufferWidth <= 0 || framebufferHeight <= 0) {
+            throw new IOException("Renderer is not ready for screenshot capture.");
+        }
+        Path screenshotDirectory = RuntimePaths.resolve("screenshots");
+        Files.createDirectories(screenshotDirectory);
+        Path output = screenshotDirectory.resolve(
+            "screenshot-" + SCREENSHOT_TIME.format(LocalDateTime.now()) + ".png"
+        );
+        ByteBuffer rgba = BufferUtils.createByteBuffer(framebufferWidth * framebufferHeight * 4);
+        glReadPixels(0, 0, framebufferWidth, framebufferHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        BufferedImage image = imageFromRgba(rgba, framebufferWidth, framebufferHeight);
+        if (!ImageIO.write(image, "png", output.toFile())) {
+            throw new IOException("PNG writer is not available for " + output);
+        }
+        verifyOpenGl("capture screenshot");
+        return output;
+    }
+
+    Path captureMenuPanorama(PlayerState player, int renderDistanceChunks, double timeOfDay) throws IOException {
+        if (!resourcesReady || player == null || framebufferWidth <= 0 || framebufferHeight <= 0) {
+            throw new IOException("Renderer is not ready for panorama capture.");
+        }
+
+        int renderSize = Math.max(1,
+            Math.min(MENU_PANORAMA_CAPTURE_SIZE, Math.min(framebufferWidth, framebufferHeight)));
+        int viewportX = (framebufferWidth - renderSize) / 2;
+        int viewportY = (framebufferHeight - renderSize) / 2;
+        Path captureDirectory = RuntimePaths.resolve(
+            "screenshots",
+            "panorama-" + SCREENSHOT_TIME.format(LocalDateTime.now())
+        );
+        Files.createDirectories(captureDirectory);
+
+        double savedYaw = player.yaw;
+        double savedPitch = player.pitch;
+        double savedFov = currentFovDegrees;
+        double savedPartialTicks = currentPartialTicks;
+        int savedRenderDistance = currentRenderDistanceChunks;
+
+        try {
+            currentFovDegrees = 90.0;
+            currentPartialTicks = 1.0;
+            currentRenderDistanceChunks = clamp(
+                renderDistanceChunks,
+                GameConfig.MIN_RENDER_DISTANCE,
+                GameConfig.MAX_RENDER_DISTANCE_CHUNKS
+            );
+            world.fillLoadedChunksSnapshot(loadedChunkSnapshot);
+            updateSkyColor(player, timeOfDay);
+
+            for (int face = 0; face < MENU_PANORAMA_FACE_COUNT; face++) {
+                player.yaw = panoramaFaceYawRadians(face);
+                player.pitch = panoramaFacePitchRadians(face);
+                ByteBuffer rgba = renderPanoramaCaptureFace(
+                    player,
+                    timeOfDay,
+                    currentRenderDistanceChunks,
+                    viewportX,
+                    viewportY,
+                    renderSize
+                );
+                BufferedImage image = panoramaImageFromRgba(rgba, renderSize);
+                image = scalePanoramaImage(image, MENU_PANORAMA_CAPTURE_SIZE);
+                Path output = captureDirectory.resolve(panoramaFaceFileName(face));
+                if (!ImageIO.write(image, "png", output.toFile())) {
+                    throw new IOException("PNG writer is not available for " + output);
+                }
+            }
+        } finally {
+            player.yaw = savedYaw;
+            player.pitch = savedPitch;
+            currentFovDegrees = savedFov;
+            currentPartialTicks = savedPartialTicks;
+            currentRenderDistanceChunks = savedRenderDistance;
+            glViewport(0, 0, framebufferWidth, framebufferHeight);
+        }
+
+        return captureDirectory;
+    }
+
+    private ByteBuffer renderPanoramaCaptureFace(PlayerState player, double timeOfDay, int renderDistanceChunks,
+                                                  int viewportX, int viewportY, int renderSize) {
+        glViewport(viewportX, viewportY, renderSize, renderSize);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_CULL_FACE);
+        setupProjection(90.0, 1.0);
+        setupCamera(player, false, false);
+        updateChunkFrustum(90.0, 1.0);
+        renderAtmosphere(player, timeOfDay, 0.0);
+        configureFog(player, timeOfDay, renderDistanceChunks);
+        renderChunks(player, false);
+        renderFallingBlocks(player);
+        renderZombies(player);
+        renderRemotePlayers(player);
+        renderDroppedItems(player, timeOfDay);
+        renderChunks(player, true);
+        glDisable(GL_FOG);
+
+        ByteBuffer rgba = BufferUtils.createByteBuffer(renderSize * renderSize * 4);
+        glReadPixels(viewportX, viewportY, renderSize, renderSize, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        verifyOpenGl("capture menu panorama face");
+        return rgba;
+    }
+
+    static double panoramaFaceYawRadians(int face) {
+        switch (face) {
+            case 0: return Math.PI;
+            case 1: return 0.0;
+            case 2:
+            case 3:
+            case 4: return -Math.PI * 0.5;
+            case 5: return Math.PI * 0.5;
+            default: throw new IllegalArgumentException("Unknown panorama face: " + face);
+        }
+    }
+
+    static double panoramaFacePitchRadians(int face) {
+        switch (face) {
+            case 0:
+            case 1:
+            case 4:
+            case 5: return 0.0;
+            case 2: return Math.PI * 0.5;
+            case 3: return -Math.PI * 0.5;
+            default: throw new IllegalArgumentException("Unknown panorama face: " + face);
+        }
+    }
+
+    static String panoramaFaceFileName(int face) {
+        if (face < 0 || face >= MENU_PANORAMA_FACE_COUNT) {
+            throw new IllegalArgumentException("Unknown panorama face: " + face);
+        }
+        return "panorama_" + face + ".png";
+    }
+
+    static BufferedImage panoramaImageFromRgba(ByteBuffer rgba, int size) {
+        return imageFromRgba(rgba, size, size);
+    }
+
+    static BufferedImage imageFromRgba(ByteBuffer rgba, int width, int height) {
+        if (rgba == null || width <= 0 || height <= 0 || rgba.capacity() < width * height * 4) {
+            throw new IllegalArgumentException("Invalid screenshot pixel buffer.");
+        }
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < height; y++) {
+            int sourceY = height - 1 - y;
+            for (int x = 0; x < width; x++) {
+                int offset = (sourceY * width + x) * 4;
+                int red = rgba.get(offset) & 0xFF;
+                int green = rgba.get(offset + 1) & 0xFF;
+                int blue = rgba.get(offset + 2) & 0xFF;
+                image.setRGB(x, y, (red << 16) | (green << 8) | blue);
+            }
+        }
+        return image;
+    }
+
+    private static BufferedImage scalePanoramaImage(BufferedImage source, int size) {
+        if (source.getWidth() == size && source.getHeight() == size) {
+            return source;
+        }
+        BufferedImage scaled = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = scaled.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.drawImage(source, 0, 0, size, size, null);
+        } finally {
+            graphics.dispose();
+        }
+        return scaled;
     }
 
     void cleanup() {
@@ -802,8 +1057,12 @@ final class OpenGlRenderer {
             unloadChunkMesh(mesh);
         }
         chunkMeshes.clear();
+        clearOpaqueRenderRegions();
         dirtyChunkMeshes.clear();
+        meshBuildRevisions.clear();
         immediateChunkMeshes.clear();
+        pendingDirtyMeshBuilds.clear();
+        pendingDirtyMeshBuildKeys.clear();
         meshBuildQueue.clear();
         queuedMeshBuildKeys.clear();
         meshBuildsInFlight.clear();
@@ -811,7 +1070,10 @@ final class OpenGlRenderer {
         meshBuildCooldownUntilNanos.clear();
         completedImmediateMeshBuilds.clear();
         completedMeshBuilds.clear();
+        completedOpaqueRegionBuilds.clear();
+        meshBuildRadiusController.reset();
         meshExecutor.shutdownNow();
+        opaqueRegionExecutor.shutdownNow();
         if (terrainTextureId != 0) {
             glDeleteTextures(terrainTextureId);
             terrainTextureId = 0;
@@ -823,6 +1085,12 @@ final class OpenGlRenderer {
             }
         }
         menuPanoramaReady = false;
+        if (blurredWorldTextureId != 0) {
+            glDeleteTextures(blurredWorldTextureId);
+            blurredWorldTextureId = 0;
+        }
+        blurredWorldTextureWidth = 0;
+        blurredWorldTextureHeight = 0;
         for (TextTexture texture : textTextures.values()) {
             glDeleteTextures(texture.textureId);
         }
@@ -865,6 +1133,7 @@ final class OpenGlRenderer {
         chunkShaderFogDensityLocation = glGetUniformLocation(program, "uFogDensity");
         chunkShaderBrightnessLocation = glGetUniformLocation(program, "uBrightness");
         chunkShaderRevealLocation = glGetUniformLocation(program, "uReveal");
+        chunkShaderRegionMeshLocation = glGetUniformLocation(program, "uRegionMesh");
         return program;
     }
 
@@ -913,13 +1182,16 @@ final class OpenGlRenderer {
     }
 
     private void setupProjection() {
+        setupProjection(currentFovDegrees, (double) framebufferWidth / framebufferHeight);
+    }
+
+    private void setupProjection(double fovDegrees, double aspect) {
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
 
         double nearPlane = CAMERA_NEAR_PLANE;
         double farPlane = cameraFarPlane();
-        double aspect = (double) framebufferWidth / framebufferHeight;
-        double top = Math.tan(Math.toRadians(currentFovDegrees) * 0.5) * nearPlane;
+        double top = Math.tan(Math.toRadians(fovDegrees) * 0.5) * nearPlane;
         double rightPlane = top * aspect;
         glFrustum(-rightPlane, rightPlane, -top, top, nearPlane, farPlane);
     }
@@ -989,15 +1261,19 @@ final class OpenGlRenderer {
     }
 
     private void updateChunkFrustum() {
-        double aspect = (double) framebufferWidth / Math.max(1, framebufferHeight);
+        updateChunkFrustum(currentFovDegrees,
+            (double) framebufferWidth / Math.max(1, framebufferHeight));
+    }
+
+    private void updateChunkFrustum(double fovDegrees, double aspect) {
         chunkFrustum.set(
-            renderCameraX,
-            renderCameraY,
-            renderCameraZ,
+            0.0,
+            0.0,
+            0.0,
             cameraForwardX,
             cameraForwardY,
             cameraForwardZ,
-            currentFovDegrees,
+            fovDegrees,
             aspect,
             CAMERA_NEAR_PLANE,
             cameraFarPlane()
@@ -1029,33 +1305,111 @@ final class OpenGlRenderer {
         return !world.isSolidBlock(world.getBlock(blockX, blockY, blockZ));
     }
 
-    private void setupMenuPanoramaCamera(PlayerState player, double deltaTime) {
+    static boolean shouldBlurWorldBackground(boolean paused, boolean mainMenuActive,
+                                             int mainMenuScreen, boolean optionsOpenedFromPause) {
+        return paused || (mainMenuActive
+            && optionsOpenedFromPause
+            && (mainMenuScreen == GameConfig.MENU_SCREEN_OPTIONS
+                || mainMenuScreen == GameConfig.MENU_SCREEN_OPEN_LAN));
+    }
+
+    static boolean shouldRenderMenuPanorama(boolean mainMenuActive, int mainMenuScreen, boolean optionsOpenedFromPause) {
+        return mainMenuActive
+            && (!optionsOpenedFromPause
+                || (mainMenuScreen != GameConfig.MENU_SCREEN_OPTIONS
+                    && mainMenuScreen != GameConfig.MENU_SCREEN_OPEN_LAN));
+    }
+
+    static boolean shouldPrepareWorldMeshes(boolean mainMenuActive, boolean menuOpenedFromWorld) {
+        return !mainMenuActive || menuOpenedFromWorld;
+    }
+
+    static boolean shouldUsePanoramaFallbackForWorldBlur(boolean blurWorldBackground,
+                                                          boolean worldGeometryReady,
+                                                          boolean menuPanoramaReady) {
+        return blurWorldBackground && !worldGeometryReady && menuPanoramaReady;
+    }
+
+    private void renderBlurredWorldBackground() {
+        ensureBlurredWorldTexture();
+        glBindTexture(GL_TEXTURE_2D, blurredWorldTextureId);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, framebufferWidth, framebufferHeight);
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0.0, framebufferWidth, framebufferHeight, 0.0, -1.0, 1.0);
         glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
         glLoadIdentity();
 
-        double step = Math.max(0.0, Math.min(deltaTime, 0.05));
-        menuPanoramaYaw += step * 0.13;
-        if (menuPanoramaYaw > Math.PI * 2.0) {
-            menuPanoramaYaw -= Math.PI * 2.0;
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(false);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
+        glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+        glBegin(GL_QUADS);
+        glVertex3d(0.0, 0.0, 0.0);
+        glVertex3d(framebufferWidth, 0.0, 0.0);
+        glVertex3d(framebufferWidth, framebufferHeight, 0.0);
+        glVertex3d(0.0, framebufferHeight, 0.0);
+        glEnd();
+
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, blurredWorldTextureId);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        float[] offsets = {-2.0f, 0.0f, 2.0f};
+        float sampleWeight = 1.0f / (offsets.length * offsets.length);
+        glColor4f(sampleWeight, sampleWeight, sampleWeight, sampleWeight);
+        for (float offsetY : offsets) {
+            for (float offsetX : offsets) {
+                drawBlurredWorldSample(offsetX / framebufferWidth, offsetY / framebufferHeight);
+            }
         }
 
-        double yaw = menuPanoramaYaw;
-        double pitch = Math.toRadians(-7.0);
-        renderCameraX = player.x;
-        renderCameraY = player.y + player.eyeHeight() + 5.0;
-        renderCameraZ = player.z;
-        cameraForwardX = Math.cos(yaw) * Math.cos(pitch);
-        cameraForwardY = Math.sin(pitch);
-        cameraForwardZ = Math.sin(yaw) * Math.cos(pitch);
-        cameraBlockX = (int) Math.floor(renderCameraX);
-        cameraBlockY = (int) Math.floor(renderCameraY);
-        cameraBlockZ = (int) Math.floor(renderCameraZ);
-        waterRenderer.setCameraBlock(cameraBlockX, cameraBlockY, cameraBlockZ);
-        spectatorInsideBlock = false;
-        refreshCameraInsideBlockMesh();
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        glDepthMask(true);
+        glEnable(GL_DEPTH_TEST);
 
-        glRotatef((float) -Math.toDegrees(pitch), 1.0f, 0.0f, 0.0f);
-        glRotatef((float) (Math.toDegrees(yaw) + 90.0), 0.0f, 1.0f, 0.0f);
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+    }
+
+    private void ensureBlurredWorldTexture() {
+        if (blurredWorldTextureId == 0) {
+            blurredWorldTextureId = glGenTextures();
+        }
+        glBindTexture(GL_TEXTURE_2D, blurredWorldTextureId);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        if (blurredWorldTextureWidth != framebufferWidth || blurredWorldTextureHeight != framebufferHeight) {
+            blurredWorldTextureWidth = framebufferWidth;
+            blurredWorldTextureHeight = framebufferHeight;
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, blurredWorldTextureWidth, blurredWorldTextureHeight,
+                0, GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        }
+    }
+
+    private void drawBlurredWorldSample(float uOffset, float vOffset) {
+        glBegin(GL_QUADS);
+        glTexCoord2f(uOffset, 1.0f + vOffset);
+        glVertex3d(0.0, 0.0, 0.0);
+        glTexCoord2f(1.0f + uOffset, 1.0f + vOffset);
+        glVertex3d(framebufferWidth, 0.0, 0.0);
+        glTexCoord2f(1.0f + uOffset, vOffset);
+        glVertex3d(framebufferWidth, framebufferHeight, 0.0);
+        glTexCoord2f(uOffset, vOffset);
+        glVertex3d(0.0, framebufferHeight, 0.0);
+        glEnd();
     }
 
     private void setupMenuPanoramaSkyboxCamera(double deltaTime) {
@@ -1075,36 +1429,35 @@ final class OpenGlRenderer {
 
     private void renderMenuPanoramaSkybox() {
         glDisable(GL_FOG);
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(false);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(true);
+        glClear(GL_DEPTH_BUFFER_BIT);
         glEnable(GL_TEXTURE_2D);
         glDisable(GL_BLEND);
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
         double size = 96.0;
-        drawPanoramaFace(0, -size, -size, -size, -size, size, -size, -size, size, size, -size, -size, size);
-        drawPanoramaFace(1, size, -size, size, size, size, size, size, size, -size, size, -size, -size);
+        drawPanoramaFace(0, -size, size, size, -size, size, -size, -size, -size, -size, -size, -size, size);
+        drawPanoramaFace(1, size, size, -size, size, size, size, size, -size, size, size, -size, -size);
         drawPanoramaFace(2, -size, size, size, size, size, size, size, size, -size, -size, size, -size);
         drawPanoramaFace(3, -size, -size, -size, size, -size, -size, size, -size, size, -size, -size, size);
-        drawPanoramaFace(4, size, -size, -size, size, size, -size, -size, size, -size, -size, -size, -size);
-        drawPanoramaFace(5, -size, -size, size, -size, size, size, size, size, size, size, -size, size);
+        drawPanoramaFace(4, -size, size, -size, size, size, -size, size, -size, -size, -size, -size, -size);
+        drawPanoramaFace(5, size, size, size, -size, size, size, -size, -size, size, size, -size, size);
 
         glBindTexture(GL_TEXTURE_2D, 0);
-        glDepthMask(true);
-        glEnable(GL_DEPTH_TEST);
     }
 
     private void drawPanoramaFace(int face, double x1, double y1, double z1, double x2, double y2, double z2,
                                   double x3, double y3, double z3, double x4, double y4, double z4) {
         glBindTexture(GL_TEXTURE_2D, menuPanoramaTextureIds[face]);
         glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 0.0f);
-        glVertex3d(x1, y1, z1);
-        glTexCoord2f(1.0f, 0.0f);
-        glVertex3d(x2, y2, z2);
-        glTexCoord2f(1.0f, 1.0f);
-        glVertex3d(x3, y3, z3);
         glTexCoord2f(0.0f, 1.0f);
+        glVertex3d(x1, y1, z1);
+        glTexCoord2f(1.0f, 1.0f);
+        glVertex3d(x2, y2, z2);
+        glTexCoord2f(1.0f, 0.0f);
+        glVertex3d(x3, y3, z3);
+        glTexCoord2f(0.0f, 0.0f);
         glVertex3d(x4, y4, z4);
         glEnd();
     }
@@ -1152,19 +1505,25 @@ final class OpenGlRenderer {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(false);
+            glDisable(GL_CULL_FACE);
         } else {
             glDisable(GL_BLEND);
             glDepthMask(true);
-        }
-
-        ArrayList<ChunkMesh> transparentMeshes = null;
-        if (transparentPass) {
-            transparentChunkPass.clear();
-            transparentMeshes = transparentChunkPass;
+            // Existing chunk faces do not all use one consistent winding order.
+            // Back-face culling therefore removes valid terrain surfaces.
+            glDisable(GL_CULL_FACE);
         }
 
         bindChunkShader(transparentPass);
         long nowNanos = System.nanoTime();
+        if (!transparentPass) {
+            debugOpaqueRegionDrawCallsLastFrame = 0;
+            glUniform1i(chunkShaderRegionMeshLocation, 1);
+            renderOpaqueRegions(playerChunkX, playerChunkZ, chunkRenderRadius, nowNanos);
+            glUniform1i(chunkShaderRegionMeshLocation, 0);
+        } else {
+            transparentChunkPass.clear();
+        }
         for (ChunkMesh mesh : chunkMeshes.values()) {
             if (mesh == null || !mesh.resident) {
                 continue;
@@ -1178,29 +1537,35 @@ final class OpenGlRenderer {
             if (!shouldRenderChunk(playerChunkX, playerChunkZ, chunkRenderRadius, chunkX, chunkY, chunkZ)) {
                 continue;
             }
+            if (!transparentPass && isOpaqueRegionRenderable(mesh)) {
+                continue;
+            }
             int vertexCount = transparentPass ? mesh.transparentVertexCount : mesh.opaqueVertexCount;
             int vaoId = transparentPass ? mesh.transparentVaoId : mesh.opaqueVaoId;
             int vboId = transparentPass ? mesh.transparentVboId : mesh.opaqueVboId;
             if (vertexCount > 0 && vboId != 0) {
                 if (transparentPass) {
-                    transparentMeshes.add(mesh);
+                    transparentChunkPass.add(mesh);
                 } else {
                     setChunkReveal(mesh, nowNanos);
                     drawChunkBuffer(mesh, vaoId, vboId, vertexCount);
+                    debugOpaqueRegionDrawCallsLastFrame++;
                 }
             }
         }
 
         if (transparentPass) {
-            if (transparentMeshes.size() > 1) {
-                transparentMeshes.sort((a, b) -> Double.compare(
+            if (transparentChunkPass.size() > 1) {
+                transparentChunkPass.sort((a, b) -> Double.compare(
                     chunkDistanceSquaredToCamera(b),
                     chunkDistanceSquaredToCamera(a)
                 ));
             }
-            for (ChunkMesh mesh : transparentMeshes) {
+            debugTransparentChunkDrawCallsLastFrame = 0;
+            for (ChunkMesh mesh : transparentChunkPass) {
                 setChunkReveal(mesh, nowNanos);
                 drawChunkBuffer(mesh, mesh.transparentVaoId, mesh.transparentVboId, mesh.transparentVertexCount);
+                debugTransparentChunkDrawCallsLastFrame++;
             }
         }
         glUseProgram(0);
@@ -1234,6 +1599,7 @@ final class OpenGlRenderer {
         glUniform1f(chunkShaderFogDensityLocation, 1.75f / visibleBlocks);
         glUniform1f(chunkShaderBrightnessLocation, Settings.brightnessMultiplier());
         glUniform1f(chunkShaderRevealLocation, 1.0f);
+        glUniform1i(chunkShaderRegionMeshLocation, 0);
     }
 
     private void setChunkReveal(ChunkMesh mesh, long nowNanos) {
@@ -1245,6 +1611,15 @@ final class OpenGlRenderer {
             return;
         }
         float reveal = (float) clamp((nowNanos - mesh.revealStartNanos) / 650_000_000.0, 0.0, 1.0);
+        glUniform1f(chunkShaderRevealLocation, reveal);
+    }
+
+    private void setOpaqueRegionReveal(OpaqueRenderRegion region, long nowNanos) {
+        if (chunkShaderRevealLocation < 0 || region.revealStartNanos <= 0L) {
+            glUniform1f(chunkShaderRevealLocation, 1.0f);
+            return;
+        }
+        float reveal = (float) clamp((nowNanos - region.revealStartNanos) / (double) OPAQUE_REGION_REVEAL_NANOS, 0.0, 1.0);
         glUniform1f(chunkShaderRevealLocation, reveal);
     }
 
@@ -1296,9 +1671,9 @@ final class OpenGlRenderer {
     }
 
     private boolean isChunkInFrustum(int chunkX, int chunkY, int chunkZ) {
-        double minX = chunkX * GameConfig.CHUNK_SIZE;
-        double minY = GameConfig.sectionYForIndex(chunkY);
-        double minZ = chunkZ * GameConfig.CHUNK_SIZE;
+        double minX = cameraRelativeChunkOrigin(chunkX, renderCameraX);
+        double minY = GameConfig.sectionYForIndex(chunkY) - renderCameraY;
+        double minZ = cameraRelativeChunkOrigin(chunkZ, renderCameraZ);
         double maxX = minX + GameConfig.CHUNK_SIZE;
         double maxY = minY + GameConfig.CHUNK_SIZE;
         double maxZ = minZ + GameConfig.CHUNK_SIZE;
@@ -1382,7 +1757,9 @@ final class OpenGlRenderer {
         if (!immediate && cooldownUntil != null && now < cooldownUntil) {
             return false;
         }
-        if (meshBuildsInFlight.putIfAbsent(candidate.meshKey, Boolean.TRUE) != null) {
+        int buildEpoch = meshBuildEpoch;
+        int buildRevision = meshBuildRevisions.current(candidate.meshKey);
+        if (meshBuildsInFlight.putIfAbsent(candidate.meshKey, buildEpoch) != null) {
             return false;
         }
         if (immediate) {
@@ -1397,11 +1774,11 @@ final class OpenGlRenderer {
             sortCameraX,
             sortCameraY,
             sortCameraZ,
-            meshBuildEpoch
+            buildEpoch
         );
         meshExecutor.execute(() -> {
             try {
-                MeshBuildResult result = buildChunkMeshResult(candidate.chunkX, candidate.chunkY, candidate.chunkZ, candidate.meshKey, context);
+                MeshBuildResult result = buildChunkMeshResult(candidate.chunkX, candidate.chunkY, candidate.chunkZ, candidate.meshKey, context, buildRevision);
                 if (result.epoch == meshBuildEpoch) {
                     meshBuildsReady.put(candidate.meshKey, Boolean.TRUE);
                     if (immediate) {
@@ -1411,21 +1788,21 @@ final class OpenGlRenderer {
                     }
                 }
             } finally {
-                meshBuildsInFlight.remove(candidate.meshKey);
+                meshBuildsInFlight.remove(candidate.meshKey, buildEpoch);
             }
         });
         return true;
     }
 
-    private MeshBuildResult buildChunkMeshResult(int chunkX, int chunkY, int chunkZ, long meshKey, MeshBuildContext context) {
+    private MeshBuildResult buildChunkMeshResult(int chunkX, int chunkY, int chunkZ, long meshKey, MeshBuildContext context, int buildRevision) {
         if (chunkY < 0 || chunkY >= GameConfig.WORLD_CHUNKS_Y) {
-            return MeshBuildResult.empty(chunkX, chunkY, chunkZ, meshKey, -1, true, context.epoch);
+            return MeshBuildResult.empty(chunkX, chunkY, chunkZ, meshKey, -1, buildRevision, true, context.epoch);
         }
 
         ChunkSectionSnapshot sourceChunk = world.getChunkSnapshot(chunkX, chunkY, chunkZ);
         if (sourceChunk == null || sourceChunk.isEmpty()) {
             int version = sourceChunk == null ? -1 : sourceChunk.version;
-            return MeshBuildResult.empty(chunkX, chunkY, chunkZ, meshKey, version, true, context.epoch);
+            return MeshBuildResult.empty(chunkX, chunkY, chunkZ, meshKey, version, buildRevision, true, context.epoch);
         }
 
         int startX = chunkX * GameConfig.CHUNK_SIZE;
@@ -1446,6 +1823,7 @@ final class OpenGlRenderer {
             chunkZ,
             meshKey,
             sourceChunk.version,
+            buildRevision,
             opaqueBuilder.toArray(),
             opaqueBuilder.intCount(),
             transparentBuilder.toArray(),
@@ -1519,6 +1897,9 @@ final class OpenGlRenderer {
                         continue;
                     }
                     if (world.isCrossPlant(block)) {
+                        if (isWaterloggedPlantForMesh(block)) {
+                            emitWaterloggedPlantWater(sourceChunk, targetBuilder, localX, localY, localZ, startX, startY, startZ, x, y, z);
+                        }
                         emitCrossPlant(targetBuilder, localX, localY, localZ, x, y, z, block);
                         continue;
                     }
@@ -2361,61 +2742,101 @@ final class OpenGlRenderer {
         return ((color >>> 8) & 0xFF) / 255.0f;
     }
 
-    private void uploadChunkBuffer(ChunkMesh mesh, boolean transparentPass, int[] vertices, int intCount) {
+    private GpuMeshBuffer uploadChunkBuffer(int[] vertices, int intCount) {
         if (intCount == 0) {
-            return;
+            return GpuMeshBuffer.EMPTY;
         }
+        int vertexCount = intCount / INTS_PER_VERTEX;
+        IntBuffer buffer = BufferUtils.createIntBuffer(vertexCount * GPU_INTS_PER_VERTEX);
+        for (int index = 0; index < intCount; index += INTS_PER_VERTEX) {
+            buffer.put(vertices[index]);
+            buffer.put(vertices[index + 1]);
+            buffer.put(0);
+        }
+        buffer.flip();
+        return uploadGpuBuffer(buffer, vertexCount, "stage chunk mesh buffer");
+    }
 
+    private GpuMeshBuffer uploadGpuBuffer(IntBuffer buffer, int vertexCount, String verificationStep) {
+        if (vertexCount == 0) {
+            return GpuMeshBuffer.EMPTY;
+        }
         int vboId = glGenBuffers();
         if (vboId == 0) {
-            throw new IllegalStateException("Failed to allocate chunk VBO");
+            throw new IllegalStateException("Failed to allocate mesh VBO");
         }
-
-        IntBuffer buffer = BufferUtils.createIntBuffer(intCount);
-        buffer.put(vertices, 0, intCount);
-        buffer.flip();
-        glBindBuffer(GL_ARRAY_BUFFER, vboId);
-        glBufferData(GL_ARRAY_BUFFER, buffer, GL_STATIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-        int vaoId = createVertexArrayObject();
-        if (vaoId != 0) {
-            bindVertexArrayObject(vaoId);
+        int vaoId = 0;
+        boolean uploaded = false;
+        try {
             glBindBuffer(GL_ARRAY_BUFFER, vboId);
-            glEnableVertexAttribArray(0);
-            glVertexAttribIPointer(0, 2, GL_UNSIGNED_INT, BYTES_PER_VERTEX, 0L);
-            bindVertexArrayObject(0);
+            glBufferData(GL_ARRAY_BUFFER, buffer, GL_STATIC_DRAW);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-        }
 
-        int vertexCount = intCount / INTS_PER_VERTEX;
-        if (transparentPass) {
-            mesh.transparentVaoId = vaoId;
-            mesh.transparentVboId = vboId;
-            mesh.transparentVertexCount = vertexCount;
-        } else {
-            mesh.opaqueVaoId = vaoId;
-            mesh.opaqueVboId = vboId;
-            mesh.opaqueVertexCount = vertexCount;
+            vaoId = createVertexArrayObject();
+            if (vaoId != 0) {
+                bindVertexArrayObject(vaoId);
+                glBindBuffer(GL_ARRAY_BUFFER, vboId);
+                glEnableVertexAttribArray(0);
+                glVertexAttribIPointer(0, GPU_INTS_PER_VERTEX, GL_UNSIGNED_INT, GPU_BYTES_PER_VERTEX, 0L);
+                bindVertexArrayObject(0);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+            }
+            verifyOpenGl(verificationStep);
+            uploaded = true;
+            return new GpuMeshBuffer(vaoId, vboId, vertexCount);
+        } finally {
+            if (!uploaded) {
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                if (vaoId != 0) {
+                    deleteVertexArrayObject(vaoId);
+                }
+                glDeleteBuffers(vboId);
+            }
+        }
+    }
+
+    static boolean isWaterloggedPlantForMesh(byte block) {
+        return block == GameConfig.SEAGRASS || block == GameConfig.KELP;
+    }
+
+    private void emitWaterloggedPlantWater(ChunkSectionSnapshot sourceChunk, IntVertexBuilder builder,
+                                            int x, int y, int z, int startX, int startY, int startZ,
+                                            int worldX, int worldY, int worldZ) {
+        byte water = GameConfig.WATER_SOURCE;
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.WEST)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.WEST, water);
+        }
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.EAST)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.EAST, water);
+        }
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.TOP)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.TOP, water);
+        }
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.BOTTOM)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.BOTTOM, water);
+        }
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.NORTH)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.NORTH, water);
+        }
+        if (waterRenderer.isRenderableBlockFace(water, worldX, worldY, worldZ, Face.SOUTH)) {
+            emitBlockFace(sourceChunk, builder, x, y, z, startX, startY, startZ, worldX, worldY, worldZ, Face.SOUTH, water);
         }
     }
 
     private void drawChunkBuffer(ChunkMesh mesh, int vaoId, int vboId, int vertexCount) {
         glUniform3f(
             chunkShaderOriginLocation,
-            (float) (mesh.chunkX * GameConfig.CHUNK_SIZE - renderCameraX),
+            (float) cameraRelativeChunkOrigin(mesh.chunkX, renderCameraX),
             (float) (GameConfig.sectionYForIndex(mesh.chunkY) - renderCameraY),
-            (float) (mesh.chunkZ * GameConfig.CHUNK_SIZE - renderCameraZ)
+            (float) cameraRelativeChunkOrigin(mesh.chunkZ, renderCameraZ)
         );
 
         if (vaoId != 0) {
-            bindVertexArrayObject(vaoId);
-            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
-            bindVertexArrayObject(0);
+            drawGpuBuffer(vaoId, vboId, vertexCount);
         } else {
             glBindBuffer(GL_ARRAY_BUFFER, vboId);
             glEnableVertexAttribArray(0);
-            glVertexAttribIPointer(0, 2, GL_UNSIGNED_INT, BYTES_PER_VERTEX, 0L);
+            glVertexAttribIPointer(0, GPU_INTS_PER_VERTEX, GL_UNSIGNED_INT, GPU_BYTES_PER_VERTEX, 0L);
             glDrawArrays(GL_TRIANGLES, 0, vertexCount);
             glDisableVertexAttribArray(0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -2428,6 +2849,8 @@ final class OpenGlRenderer {
         mesh.opaqueVaoId = 0;
         mesh.opaqueVboId = 0;
         mesh.opaqueVertexCount = 0;
+        mesh.opaqueVertices = new int[0];
+        mesh.opaqueIntCount = 0;
         mesh.transparentVaoId = 0;
         mesh.transparentVboId = 0;
         mesh.transparentVertexCount = 0;
@@ -2439,19 +2862,38 @@ final class OpenGlRenderer {
     private void dropChunkMesh(long meshKey) {
         ChunkMesh mesh = chunkMeshes.remove(meshKey);
         if (mesh != null) {
+            markOpaqueRegionDirty(mesh);
             unloadChunkMesh(mesh);
         }
         dirtyChunkMeshes.remove(meshKey);
         immediateChunkMeshes.remove(meshKey);
+        pendingDirtyMeshBuildKeys.remove(meshKey);
+        pendingDirtyMeshBuilds.removeIf(key -> key.longValue() == meshKey);
+        queuedMeshBuildKeys.remove(meshKey);
         meshBuildCooldownUntilNanos.remove(meshKey);
         meshBuildsReady.remove(meshKey);
+        meshBuildRevisions.forget(meshKey);
+    }
+
+    private void clearOpaqueRenderRegions() {
+        for (OpaqueRenderRegion region : opaqueRenderRegions.values()) {
+            deleteMeshBuffer(region.vaoId, region.vboId);
+        }
+        opaqueRenderRegions.clear();
+        pendingOpaqueRegionBuilds.clear();
+        pendingOpaqueRegionBuildKeys.clear();
+        opaqueRegionBuildsInFlight = 0;
     }
 
     private void pruneDistantMeshBookkeeping(int playerChunkX, int playerChunkZ, int unloadChunkRadius) {
         pruneMeshKeySet(dirtyChunkMeshes, playerChunkX, playerChunkZ, unloadChunkRadius);
         pruneMeshKeySet(immediateChunkMeshes, playerChunkX, playerChunkZ, unloadChunkRadius);
+        pruneMeshKeySet(pendingDirtyMeshBuildKeys, playerChunkX, playerChunkZ, unloadChunkRadius);
+        pendingDirtyMeshBuilds.removeIf(key -> shouldPruneMeshKey(key, playerChunkX, playerChunkZ, unloadChunkRadius));
+        pruneMeshKeySet(queuedMeshBuildKeys, playerChunkX, playerChunkZ, unloadChunkRadius);
         pruneMeshKeyMap(meshBuildCooldownUntilNanos, playerChunkX, playerChunkZ, unloadChunkRadius);
         pruneMeshKeyMap(meshBuildsReady, playerChunkX, playerChunkZ, unloadChunkRadius);
+        meshBuildRevisions.forgetIf(key -> shouldPruneMeshKey(key, playerChunkX, playerChunkZ, unloadChunkRadius));
     }
 
     private void pruneMeshKeySet(HashSet<Long> keys, int playerChunkX, int playerChunkZ, int unloadChunkRadius) {
@@ -2521,21 +2963,37 @@ final class OpenGlRenderer {
     }
 
     private int uploadReadyChunkMeshes(int uploadBudget, int playerChunkX, int playerChunkZ, int unloadChunkRadius) {
-        debugRejectedMeshVersionsLastFrame = 0;
-        int immediateBudget = completedImmediateMeshBuilds.isEmpty() ? 0 : MAX_IMMEDIATE_CHUNK_UPLOADS_PER_FRAME;
-        int immediateUploaded = uploadReadyChunkMeshQueue(completedImmediateMeshBuilds, immediateBudget, playerChunkX, playerChunkZ, unloadChunkRadius);
-        int regularUploaded = uploadReadyChunkMeshQueue(completedMeshBuilds, Math.max(0, uploadBudget - immediateUploaded), playerChunkX, playerChunkZ, unloadChunkRadius);
+        int readyBacklog = completedImmediateMeshBuilds.size() + completedMeshBuilds.size();
+        int totalBudget = Math.min(MAX_CHUNK_UPLOADS_PER_FRAME, Math.max(0, uploadBudget));
+        long uploadStartNanos = System.nanoTime();
+        long uploadDeadlineNanos = uploadStartNanos + dynamicMeshUploadTimeBudgetNanos(readyBacklog);
+        int immediateBudget = completedImmediateMeshBuilds.isEmpty()
+            ? 0
+            : Math.min(MAX_IMMEDIATE_CHUNK_UPLOADS_PER_FRAME, totalBudget);
+        int immediateUploaded = uploadReadyChunkMeshQueue(completedImmediateMeshBuilds, immediateBudget, uploadDeadlineNanos, playerChunkX, playerChunkZ, unloadChunkRadius);
+        int regularBudget = Math.max(0, totalBudget - immediateUploaded);
+        int regularUploaded = uploadReadyChunkMeshQueue(completedMeshBuilds, regularBudget, uploadDeadlineNanos, playerChunkX, playerChunkZ, unloadChunkRadius);
         int uploaded = immediateUploaded + regularUploaded;
-        debugUploadedMeshesLastFrame = uploaded;
+        debugMeshUploadNanosLastFrame = System.nanoTime() - uploadStartNanos;
         if (uploaded > 0) {
             verifyOpenGl("uploadReadyChunkMeshes");
         }
         return uploaded;
     }
 
-    private int uploadReadyChunkMeshQueue(ConcurrentLinkedQueue<MeshBuildResult> queue, int uploadBudget, int playerChunkX, int playerChunkZ, int unloadChunkRadius) {
+    private long dynamicMeshUploadTimeBudgetNanos(int readyBacklog) {
+        if (debugFps > 0.0 && debugFps < 45.0) {
+            return LOW_FPS_MESH_UPLOAD_BUDGET_NANOS;
+        }
+        if (readyBacklog > 500 && (debugFps >= 45.0 || debugFps <= 0.0)) {
+            return BACKLOG_MESH_UPLOAD_BUDGET_NANOS;
+        }
+        return NORMAL_MESH_UPLOAD_BUDGET_NANOS;
+    }
+
+    private int uploadReadyChunkMeshQueue(ConcurrentLinkedQueue<MeshBuildResult> queue, int uploadBudget, long uploadDeadlineNanos, int playerChunkX, int playerChunkZ, int unloadChunkRadius) {
         int uploaded = 0;
-        while (uploaded < uploadBudget) {
+        while (uploaded < uploadBudget && System.nanoTime() < uploadDeadlineNanos) {
             MeshBuildResult result = queue.poll();
             if (result == null) {
                 break;
@@ -2558,10 +3016,10 @@ final class OpenGlRenderer {
                 continue;
             }
             int currentVersion = current == null ? -1 : current.version;
-            if (currentVersion != result.version) {
-                debugRejectedMeshVersionsLastFrame++;
+            if (currentVersion != result.version || !meshBuildRevisions.isCurrent(result.meshKey, result.buildRevision)) {
                 dirtyChunkMeshes.add(result.meshKey);
                 immediateChunkMeshes.add(result.meshKey);
+                enqueueDirtyMeshBuild(result.meshKey);
                 meshBuildCooldownUntilNanos.remove(result.meshKey);
                 continue;
             }
@@ -2577,19 +3035,55 @@ final class OpenGlRenderer {
                 mesh.revealStartNanos = System.nanoTime();
                 chunkMeshes.put(result.meshKey, mesh);
             }
+            boolean opaqueRegionWasRenderable = isOpaqueRegionRenderable(mesh);
+            GpuMeshBuffer preparedOpaque = GpuMeshBuffer.EMPTY;
+            GpuMeshBuffer preparedTransparent = GpuMeshBuffer.EMPTY;
+            try {
+                if (!opaqueRegionWasRenderable) {
+                    preparedOpaque = uploadChunkBuffer(result.opaqueVertices, result.opaqueIntCount);
+                }
+                preparedTransparent = uploadChunkBuffer(result.transparentVertices, result.transparentIntCount);
+            } catch (RuntimeException uploadFailure) {
+                deleteMeshBuffer(preparedOpaque.vaoId, preparedOpaque.vboId);
+                deleteMeshBuffer(preparedTransparent.vaoId, preparedTransparent.vboId);
+                dirtyChunkMeshes.add(result.meshKey);
+                enqueueDirtyMeshBuild(result.meshKey);
+                meshBuildCooldownUntilNanos.put(
+                    result.meshKey,
+                    System.nanoTime() + CHUNK_MESH_REBUILD_COOLDOWN_NANOS
+                );
+                if (GameConfig.ENABLE_DEBUG_LOGS) {
+                    System.out.println("OpenGlRenderer: mesh upload will retry: " + uploadFailure.getMessage());
+                }
+                continue;
+            } catch (Error uploadFailure) {
+                deleteMeshBuffer(preparedOpaque.vaoId, preparedOpaque.vboId);
+                deleteMeshBuffer(preparedTransparent.vaoId, preparedTransparent.vboId);
+                throw uploadFailure;
+            }
 
-            deleteMeshBuffer(mesh.opaqueVaoId, mesh.opaqueVboId);
-            deleteMeshBuffer(mesh.transparentVaoId, mesh.transparentVboId);
-            mesh.opaqueVaoId = 0;
-            mesh.opaqueVboId = 0;
-            mesh.opaqueVertexCount = 0;
-            mesh.transparentVaoId = 0;
-            mesh.transparentVboId = 0;
-            mesh.transparentVertexCount = 0;
-
-            uploadChunkBuffer(mesh, false, result.opaqueVertices, result.opaqueIntCount);
-            uploadChunkBuffer(mesh, true, result.transparentVertices, result.transparentIntCount);
-            mesh.hasOpaqueGeometry = mesh.opaqueVertexCount > 0;
+            int oldOpaqueVaoId = mesh.opaqueVaoId;
+            int oldOpaqueVboId = mesh.opaqueVboId;
+            int oldTransparentVaoId = mesh.transparentVaoId;
+            int oldTransparentVboId = mesh.transparentVboId;
+            mesh.opaqueVertices = result.opaqueVertices;
+            mesh.opaqueIntCount = result.opaqueIntCount;
+            mesh.opaqueVertexCount = result.opaqueIntCount / INTS_PER_VERTEX;
+            if (opaqueRegionWasRenderable) {
+                mesh.opaqueVaoId = 0;
+                mesh.opaqueVboId = 0;
+            } else {
+                mesh.opaqueVaoId = preparedOpaque.vaoId;
+                mesh.opaqueVboId = preparedOpaque.vboId;
+                mesh.opaqueVertexCount = preparedOpaque.vertexCount;
+            }
+            mesh.transparentVaoId = preparedTransparent.vaoId;
+            mesh.transparentVboId = preparedTransparent.vboId;
+            mesh.transparentVertexCount = preparedTransparent.vertexCount;
+            markOpaqueRegionDirty(mesh);
+            deleteMeshBuffer(oldOpaqueVaoId, oldOpaqueVboId);
+            deleteMeshBuffer(oldTransparentVaoId, oldTransparentVboId);
+            mesh.hasOpaqueGeometry = mesh.opaqueIntCount > 0;
             mesh.hasTransparentGeometry = mesh.transparentVertexCount > 0;
             mesh.resident = mesh.hasOpaqueGeometry || mesh.hasTransparentGeometry;
             dirtyChunkMeshes.remove(result.meshKey);
@@ -2599,6 +3093,190 @@ final class OpenGlRenderer {
         return uploaded;
     }
 
+    private void markOpaqueRegionDirty(ChunkMesh mesh) {
+        long regionKey = opaqueRegionKey(mesh.chunkX, mesh.chunkY, mesh.chunkZ);
+        OpaqueRenderRegion region = opaqueRenderRegions.get(regionKey);
+        if (region == null) {
+            region = new OpaqueRenderRegion(
+                Math.floorDiv(mesh.chunkX, OPAQUE_RENDER_REGION_SIZE_CHUNKS) * OPAQUE_RENDER_REGION_SIZE_CHUNKS,
+                mesh.chunkY,
+                Math.floorDiv(mesh.chunkZ, OPAQUE_RENDER_REGION_SIZE_CHUNKS) * OPAQUE_RENDER_REGION_SIZE_CHUNKS
+            );
+            opaqueRenderRegions.put(regionKey, region);
+        }
+        region.version++;
+        if (!region.buildInFlight) {
+            enqueueOpaqueRegionBuild(regionKey);
+        }
+    }
+
+    private long opaqueRegionKey(int chunkX, int chunkY, int chunkZ) {
+        return chunkKey(
+            Math.floorDiv(chunkX, OPAQUE_RENDER_REGION_SIZE_CHUNKS),
+            chunkY,
+            Math.floorDiv(chunkZ, OPAQUE_RENDER_REGION_SIZE_CHUNKS)
+        );
+    }
+
+    private void enqueueOpaqueRegionBuild(long regionKey) {
+        if (pendingOpaqueRegionBuildKeys.add(regionKey)) {
+            pendingOpaqueRegionBuilds.addLast(regionKey);
+        }
+    }
+
+    private void scheduleOpaqueRegionBuild() {
+        if (opaqueRegionBuildsInFlight > 0) {
+            return;
+        }
+        while (!pendingOpaqueRegionBuilds.isEmpty()) {
+            long regionKey = pendingOpaqueRegionBuilds.removeFirst();
+            pendingOpaqueRegionBuildKeys.remove(regionKey);
+            OpaqueRenderRegion region = opaqueRenderRegions.get(regionKey);
+            if (region == null || region.buildInFlight) {
+                continue;
+            }
+            OpaqueRegionBuildSnapshot snapshot = snapshotOpaqueRegion(regionKey, region);
+            region.buildInFlight = true;
+            opaqueRegionBuildsInFlight++;
+            opaqueRegionExecutor.execute(() -> {
+                try {
+                    completedOpaqueRegionBuilds.add(buildOpaqueRegion(snapshot));
+                } catch (RuntimeException failure) {
+                    completedOpaqueRegionBuilds.add(OpaqueRegionBuildResult.failed(snapshot, failure));
+                }
+            });
+            return;
+        }
+    }
+
+    private OpaqueRegionBuildSnapshot snapshotOpaqueRegion(long regionKey, OpaqueRenderRegion region) {
+        int[][] vertices = new int[OPAQUE_RENDER_REGION_SIZE_CHUNKS * OPAQUE_RENDER_REGION_SIZE_CHUNKS][];
+        int[] intCounts = new int[vertices.length];
+        int[] localChunkXs = new int[vertices.length];
+        int[] localChunkZs = new int[vertices.length];
+        long[] meshKeys = new long[vertices.length];
+        int entryCount = 0;
+        for (int offsetX = 0; offsetX < OPAQUE_RENDER_REGION_SIZE_CHUNKS; offsetX++) {
+            for (int offsetZ = 0; offsetZ < OPAQUE_RENDER_REGION_SIZE_CHUNKS; offsetZ++) {
+                int chunkX = region.chunkX + offsetX;
+                int chunkZ = region.chunkZ + offsetZ;
+                ChunkMesh mesh = chunkMeshes.get(chunkKey(chunkX, region.chunkY, chunkZ));
+                if (mesh == null || mesh.opaqueIntCount == 0) {
+                    continue;
+                }
+                vertices[entryCount] = mesh.opaqueVertices;
+                intCounts[entryCount] = mesh.opaqueIntCount;
+                localChunkXs[entryCount] = offsetX;
+                localChunkZs[entryCount] = offsetZ;
+                meshKeys[entryCount] = chunkKey(chunkX, region.chunkY, chunkZ);
+                entryCount++;
+            }
+        }
+        return new OpaqueRegionBuildSnapshot(regionKey, region.version, meshBuildEpoch, vertices, intCounts, localChunkXs, localChunkZs, meshKeys, entryCount);
+    }
+
+    private static OpaqueRegionBuildResult buildOpaqueRegion(OpaqueRegionBuildSnapshot snapshot) {
+        int totalVertices = 0;
+        for (int index = 0; index < snapshot.entryCount; index++) {
+            totalVertices += snapshot.intCounts[index] / INTS_PER_VERTEX;
+        }
+        int[] regionVertices = new int[totalVertices * GPU_INTS_PER_VERTEX];
+        int output = 0;
+        for (int entry = 0; entry < snapshot.entryCount; entry++) {
+            int[] source = snapshot.vertices[entry];
+            int xOffset = snapshot.localChunkXs[entry] * GameConfig.CHUNK_SIZE * (int) PACKED_VERTEX_SCALE;
+            int zOffset = snapshot.localChunkZs[entry] * GameConfig.CHUNK_SIZE * (int) PACKED_VERTEX_SCALE;
+            for (int input = 0; input < snapshot.intCounts[entry]; input += INTS_PER_VERTEX) {
+                int packed = source[input];
+                long regionPosition = packOpaqueRegionPosition(packed, xOffset, zOffset);
+                regionVertices[output++] = (int) regionPosition;
+                regionVertices[output++] = (int) (regionPosition >>> 32);
+                regionVertices[output++] = source[input + 1];
+            }
+        }
+        long[] includedMeshKeys = new long[snapshot.entryCount];
+        System.arraycopy(snapshot.meshKeys, 0, includedMeshKeys, 0, snapshot.entryCount);
+        return new OpaqueRegionBuildResult(snapshot.regionKey, snapshot.version, snapshot.epoch, regionVertices, includedMeshKeys);
+    }
+
+    private void uploadReadyOpaqueRegionMeshes() {
+        int uploaded = 0;
+        while (uploaded < MAX_OPAQUE_REGION_UPLOADS_PER_FRAME) {
+            OpaqueRegionBuildResult result = completedOpaqueRegionBuilds.poll();
+            if (result == null) {
+                return;
+            }
+            if (result.epoch != meshBuildEpoch) {
+                continue;
+            }
+            opaqueRegionBuildsInFlight = Math.max(0, opaqueRegionBuildsInFlight - 1);
+            OpaqueRenderRegion region = opaqueRenderRegions.get(result.regionKey);
+            if (region == null) {
+                continue;
+            }
+            region.buildInFlight = false;
+            if (result.failure != null) {
+                enqueueOpaqueRegionBuild(result.regionKey);
+                if (GameConfig.ENABLE_DEBUG_LOGS) {
+                    System.out.println("OpenGlRenderer: opaque region build will retry: " + result.failure.getMessage());
+                }
+                continue;
+            }
+            if (result.version != region.version) {
+                enqueueOpaqueRegionBuild(result.regionKey);
+                continue;
+            }
+            boolean firstUpload = region.vboId == 0;
+            try {
+                uploadOpaqueRegionBuffer(region, result.vertices);
+            } catch (RuntimeException uploadFailure) {
+                enqueueOpaqueRegionBuild(result.regionKey);
+                if (GameConfig.ENABLE_DEBUG_LOGS) {
+                    System.out.println("OpenGlRenderer: opaque region upload will retry: " + uploadFailure.getMessage());
+                }
+                continue;
+            }
+            if (firstUpload) {
+                region.revealStartNanos = System.nanoTime();
+            }
+            region.includedMeshKeys.clear();
+            for (long meshKey : result.includedMeshKeys) {
+                region.includedMeshKeys.add(meshKey);
+            }
+            deleteOpaqueFallbackBuffers(region);
+            uploaded++;
+        }
+    }
+
+    private void uploadOpaqueRegionBuffer(OpaqueRenderRegion region, int[] vertices) {
+        int vertexCount = vertices.length / GPU_INTS_PER_VERTEX;
+        GpuMeshBuffer prepared = GpuMeshBuffer.EMPTY;
+        if (vertexCount > 0) {
+            IntBuffer buffer = BufferUtils.createIntBuffer(vertices.length);
+            buffer.put(vertices).flip();
+            prepared = uploadGpuBuffer(buffer, vertexCount, "stage opaque region buffer");
+        }
+        int oldVaoId = region.vaoId;
+        int oldVboId = region.vboId;
+        region.vaoId = prepared.vaoId;
+        region.vboId = prepared.vboId;
+        region.vertexCount = prepared.vertexCount;
+        deleteMeshBuffer(oldVaoId, oldVboId);
+    }
+
+    private void deleteOpaqueFallbackBuffers(OpaqueRenderRegion region) {
+        for (long meshKey : region.includedMeshKeys) {
+            ChunkMesh mesh = chunkMeshes.get(meshKey);
+            if (mesh == null || mesh.opaqueVboId == 0) {
+                continue;
+            }
+            deleteMeshBuffer(mesh.opaqueVaoId, mesh.opaqueVboId);
+            mesh.opaqueVaoId = 0;
+            mesh.opaqueVboId = 0;
+            mesh.opaqueVertexCount = 0;
+        }
+    }
+
     private void ensureChunkMeshesAroundPlayer(double playerX, double playerY, double playerZ, int activeChunkRadius) {
         int playerChunkX = worldToChunk((int) Math.floor(playerX));
         int playerChunkZ = worldToChunk((int) Math.floor(playerZ));
@@ -2606,51 +3284,33 @@ final class OpenGlRenderer {
         int uploadBudget = dynamicMeshUploadBudget();
         int meshSubmissionBudget = dynamicChunkUploadBudget();
         long meshProfileStartNs = System.nanoTime();
-        int visibleChunkCount = 0;
         int uploadedMeshCount = uploadReadyChunkMeshes(uploadBudget, playerChunkX, playerChunkZ, unloadChunkRadius);
+        uploadReadyOpaqueRegionMeshes();
+        scheduleOpaqueRegionBuild();
         int submittedMeshCount = 0;
-        int pendingBuildBacklog = completedImmediateMeshBuilds.size() + completedMeshBuilds.size() + meshBuildsInFlight.size();
-        meshBuildQueue.clear();
-        queuedMeshBuildKeys.clear();
-
-        for (Chunk chunk : loadedChunkSnapshot) {
-            int horizontalDistance = Math.max(Math.abs(chunk.chunkX - playerChunkX), Math.abs(chunk.chunkZ - playerChunkZ));
-            long meshKey = chunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-            ChunkMesh mesh = chunkMeshes.get(meshKey);
-            if (chunk.isEmpty()) {
-                dropChunkMesh(meshKey);
-                continue;
-            }
-
-            if (horizontalDistance <= activeChunkRadius) {
-                boolean visible = shouldRenderChunk(playerChunkX, playerChunkZ, activeChunkRadius, chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-                if (visible) {
-                    visibleChunkCount++;
-                }
-                boolean needsUpload = mesh == null || !mesh.resident || dirtyChunkMeshes.contains(meshKey);
-                if (needsUpload) {
-                    double distanceSquared = chunkDistanceSquaredToPoint(chunk.chunkX, chunk.chunkY, chunk.chunkZ, playerX, playerY, playerZ);
-                    queueMeshBuildCandidate(new MeshBuildCandidate(chunk.chunkX, chunk.chunkY, chunk.chunkZ, meshKey, visible, distanceSquared, immediateChunkMeshes.contains(meshKey)));
-                }
-            } else if (horizontalDistance > unloadChunkRadius && mesh != null) {
-                dropChunkMesh(meshKey);
-            }
-        }
-
+        refreshMeshBuildPriorities(playerChunkX, playerChunkZ);
+        discoverLoadedChunkMeshes(playerChunkX, playerChunkZ, activeChunkRadius, unloadChunkRadius);
+        int promotedCandidateCount = promoteDirtyMeshCandidates(playerX, playerY, playerZ, playerChunkX, playerChunkZ, activeChunkRadius);
+        int availableBuildSlots = Math.max(0, dynamicMeshBuildInFlightLimit() - meshBuildsInFlight.size());
+        meshSubmissionBudget = Math.min(meshSubmissionBudget, availableBuildSlots);
         while (meshSubmissionBudget > 0 && !meshBuildQueue.isEmpty()) {
             MeshBuildCandidate candidate = meshBuildQueue.poll();
-            if (!candidate.immediate && pendingBuildBacklog > MAX_PENDING_MESH_BACKLOG) {
-                break;
+            queuedMeshBuildKeys.remove(candidate.meshKey);
+            if (!dirtyChunkMeshes.contains(candidate.meshKey) || meshBuildsInFlight.containsKey(candidate.meshKey) || meshBuildsReady.containsKey(candidate.meshKey)) {
+                continue;
+            }
+            int horizontalDistance = Math.max(Math.abs(candidate.chunkX - playerChunkX), Math.abs(candidate.chunkZ - playerChunkZ));
+            if (horizontalDistance > activeChunkRadius || !world.isChunkLoaded(candidate.chunkX, candidate.chunkZ)) {
+                continue;
             }
             if (submitChunkMeshBuild(candidate, playerX, playerY, playerZ)) {
                 submittedMeshCount++;
-                pendingBuildBacklog++;
                 meshSubmissionBudget--;
+            } else if (dirtyChunkMeshes.contains(candidate.meshKey) && !meshBuildsInFlight.containsKey(candidate.meshKey) && !meshBuildsReady.containsKey(candidate.meshKey)) {
+                enqueueDirtyMeshBuild(candidate.meshKey);
             }
         }
-        logMeshProfile(uploadedMeshCount + submittedMeshCount, visibleChunkCount, System.nanoTime() - meshProfileStartNs);
-        meshBuildQueue.clear();
-        queuedMeshBuildKeys.clear();
+        logMeshProfile(uploadedMeshCount + submittedMeshCount, promotedCandidateCount, System.nanoTime() - meshProfileStartNs);
 
         staleMeshKeys.clear();
         for (ChunkMesh mesh : chunkMeshes.values()) {
@@ -2667,8 +3327,170 @@ final class OpenGlRenderer {
         pruneDistantMeshBookkeeping(playerChunkX, playerChunkZ, unloadChunkRadius);
     }
 
+    private void refreshMeshBuildPriorities(int playerChunkX, int playerChunkZ) {
+        if (playerChunkX == lastMeshPriorityChunkX && playerChunkZ == lastMeshPriorityChunkZ) return;
+        lastMeshPriorityChunkX = playerChunkX;
+        lastMeshPriorityChunkZ = playerChunkZ;
+        while (!meshBuildQueue.isEmpty()) {
+            MeshBuildCandidate candidate = meshBuildQueue.poll();
+            queuedMeshBuildKeys.remove(candidate.meshKey);
+            if (dirtyChunkMeshes.contains(candidate.meshKey)) enqueueDirtyMeshBuild(candidate.meshKey);
+        }
+    }
+
+    private void drawGpuBuffer(int vaoId, int vboId, int vertexCount) {
+        if (vaoId != 0) {
+            bindVertexArrayObject(vaoId);
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+            bindVertexArrayObject(0);
+        } else {
+            glBindBuffer(GL_ARRAY_BUFFER, vboId);
+            glEnableVertexAttribArray(0);
+            glVertexAttribIPointer(0, GPU_INTS_PER_VERTEX, GL_UNSIGNED_INT, GPU_BYTES_PER_VERTEX, 0L);
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+            glDisableVertexAttribArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+    }
+
+    private void renderOpaqueRegions(int playerChunkX, int playerChunkZ, int chunkRenderRadius, long nowNanos) {
+        for (OpaqueRenderRegion region : opaqueRenderRegions.values()) {
+            if (region.vboId == 0 || region.vertexCount == 0 || !isOpaqueRegionInRange(region, playerChunkX, playerChunkZ, chunkRenderRadius)
+                || !isOpaqueRegionInFrustum(region)) {
+                continue;
+            }
+            glUniform3f(
+                chunkShaderOriginLocation,
+                (float) cameraRelativeChunkOrigin(region.chunkX, renderCameraX),
+                (float) (GameConfig.sectionYForIndex(region.chunkY) - renderCameraY),
+                (float) cameraRelativeChunkOrigin(region.chunkZ, renderCameraZ)
+            );
+            setOpaqueRegionReveal(region, nowNanos);
+            drawGpuBuffer(region.vaoId, region.vboId, region.vertexCount);
+            debugOpaqueRegionDrawCallsLastFrame++;
+        }
+    }
+
+    private boolean isOpaqueRegionRenderable(ChunkMesh mesh) {
+        OpaqueRenderRegion region = opaqueRenderRegions.get(opaqueRegionKey(mesh.chunkX, mesh.chunkY, mesh.chunkZ));
+        return region != null && region.vboId != 0 && region.includedMeshKeys.contains(chunkKey(mesh.chunkX, mesh.chunkY, mesh.chunkZ));
+    }
+
+    private boolean isOpaqueRegionInRange(OpaqueRenderRegion region, int playerChunkX, int playerChunkZ, int chunkRenderRadius) {
+        int minX = region.chunkX;
+        int minZ = region.chunkZ;
+        int maxX = minX + OPAQUE_RENDER_REGION_SIZE_CHUNKS - 1;
+        int maxZ = minZ + OPAQUE_RENDER_REGION_SIZE_CHUNKS - 1;
+        int distanceX = playerChunkX < minX ? minX - playerChunkX : Math.max(0, playerChunkX - maxX);
+        int distanceZ = playerChunkZ < minZ ? minZ - playerChunkZ : Math.max(0, playerChunkZ - maxZ);
+        return Math.max(distanceX, distanceZ) <= chunkRenderRadius;
+    }
+
+    private boolean isOpaqueRegionInFrustum(OpaqueRenderRegion region) {
+        double minX = cameraRelativeChunkOrigin(region.chunkX, renderCameraX);
+        double minY = GameConfig.sectionYForIndex(region.chunkY) - renderCameraY;
+        double minZ = cameraRelativeChunkOrigin(region.chunkZ, renderCameraZ);
+        double size = OPAQUE_RENDER_REGION_SIZE_CHUNKS * GameConfig.CHUNK_SIZE;
+        return chunkFrustum.intersectsAabb(minX, minY, minZ, minX + size, minY + GameConfig.CHUNK_SIZE, minZ + size);
+    }
+
+    static double cameraRelativeChunkOrigin(int chunkCoordinate, double cameraCoordinate) {
+        return (double) chunkCoordinate * GameConfig.CHUNK_SIZE - cameraCoordinate;
+    }
+
+    static long packOpaqueRegionPosition(int chunkPositionAndAo, int packedXOffset, int packedZOffset) {
+        int packedX = (chunkPositionAndAo & PACKED_VERTEX_MAX) + packedXOffset;
+        int packedY = (chunkPositionAndAo >>> 10) & PACKED_VERTEX_MAX;
+        int packedZ = ((chunkPositionAndAo >>> 20) & PACKED_VERTEX_MAX) + packedZOffset;
+        if (packedX < 0 || packedX > PACKED_REGION_COORD_MAX || packedZ < 0 || packedZ > PACKED_REGION_COORD_MAX) {
+            throw new IllegalArgumentException("Opaque region vertex is outside the packed coordinate range");
+        }
+        int ao = (chunkPositionAndAo >>> 30) & 3;
+        int low = packedX | (packedY << 13) | ((packedZ & PACKED_REGION_Z_LOW_MAX) << 23);
+        int high = (packedZ >>> 9) | (ao << 4);
+        return (low & 0xFFFFFFFFL) | ((long) high << 32);
+    }
+
+    private void discoverLoadedChunkMeshes(int playerChunkX, int playerChunkZ, int activeChunkRadius, int unloadChunkRadius) {
+        int loadedCount = loadedChunkSnapshot.size();
+        if (loadedCount == 0) { loadedChunkDiscoveryCursor = 0; return; }
+        if (loadedChunkDiscoveryCursor >= loadedCount) loadedChunkDiscoveryCursor = 0;
+        int discoveryCount = Math.min(MAX_CHUNK_DISCOVERY_PER_FRAME, loadedCount);
+        for (int i = 0; i < discoveryCount; i++) {
+            Chunk chunk = loadedChunkSnapshot.get(loadedChunkDiscoveryCursor);
+            loadedChunkDiscoveryCursor = (loadedChunkDiscoveryCursor + 1) % loadedCount;
+            int horizontalDistance = Math.max(Math.abs(chunk.chunkX - playerChunkX), Math.abs(chunk.chunkZ - playerChunkZ));
+            long meshKey = chunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+            ChunkMesh mesh = chunkMeshes.get(meshKey);
+            if (chunk.isEmpty()) {
+                if (mesh != null || dirtyChunkMeshes.contains(meshKey)) dropChunkMesh(meshKey);
+            } else if (horizontalDistance <= activeChunkRadius) {
+                if (mesh == null || !mesh.resident || dirtyChunkMeshes.contains(meshKey)) {
+                if (dirtyChunkMeshes.add(meshKey)) {
+                    meshBuildRevisions.invalidate(meshKey);
+                }
+                    enqueueDirtyMeshBuild(meshKey);
+                }
+            } else if (horizontalDistance > unloadChunkRadius && mesh != null) {
+                dropChunkMesh(meshKey);
+            }
+        }
+    }
+
+    private int promoteDirtyMeshCandidates(double playerX, double playerY, double playerZ, int playerChunkX, int playerChunkZ, int activeChunkRadius) {
+        int promotedCandidateCount = 0;
+        int candidateCount = Math.min(MAX_DIRTY_CANDIDATES_PER_FRAME, pendingDirtyMeshBuilds.size());
+        for (int i = 0; i < candidateCount; i++) {
+            long meshKey = pendingDirtyMeshBuilds.removeFirst();
+            pendingDirtyMeshBuildKeys.remove(meshKey);
+            if (!dirtyChunkMeshes.contains(meshKey) || meshBuildsInFlight.containsKey(meshKey) || meshBuildsReady.containsKey(meshKey) || queuedMeshBuildKeys.contains(meshKey)) continue;
+            int chunkX = chunkXFromKey(meshKey);
+            int chunkY = chunkYFromKey(meshKey);
+            int chunkZ = chunkZFromKey(meshKey);
+            int horizontalDistance = Math.max(Math.abs(chunkX - playerChunkX), Math.abs(chunkZ - playerChunkZ));
+            if (horizontalDistance > activeChunkRadius || !world.isChunkLoaded(chunkX, chunkZ)) continue;
+            Chunk chunk = world.getChunk(chunkX, chunkY, chunkZ);
+            if (chunk == null) continue;
+            if (chunk.isEmpty()) { dropChunkMesh(meshKey); continue; }
+            promotedCandidateCount++;
+            double distanceSquared = chunkDistanceSquaredToPoint(chunkX, chunkY, chunkZ, playerX, playerY, playerZ);
+            queueMeshBuildCandidate(new MeshBuildCandidate(chunkX, chunkY, chunkZ, meshKey, distanceSquared, immediateChunkMeshes.contains(meshKey)));
+        }
+        return promotedCandidateCount;
+    }
+
+    private void enqueueDirtyMeshBuild(long meshKey) {
+        if (pendingDirtyMeshBuildKeys.contains(meshKey)) {
+            return;
+        }
+        if (pendingDirtyMeshBuildKeys.size() >= MAX_PENDING_DIRTY_MESH_BUILDS
+            && !immediateChunkMeshes.contains(meshKey)) {
+            return;
+        }
+        pendingDirtyMeshBuildKeys.add(meshKey);
+        pendingDirtyMeshBuilds.addLast(meshKey);
+    }
+
     private void queueMeshBuildCandidate(MeshBuildCandidate candidate) {
-        if (queuedMeshBuildKeys.add(candidate.meshKey)) {
+        if (queuedMeshBuildKeys.contains(candidate.meshKey)) {
+            return;
+        }
+        if (meshBuildQueue.size() < MAX_QUEUED_MESH_BUILD_CANDIDATES) {
+            queuedMeshBuildKeys.add(candidate.meshKey);
+            meshBuildQueue.add(candidate);
+            return;
+        }
+
+        MeshBuildCandidate worstCandidate = null;
+        for (MeshBuildCandidate queuedCandidate : meshBuildQueue) {
+            if (worstCandidate == null || queuedCandidate.compareTo(worstCandidate) > 0) {
+                worstCandidate = queuedCandidate;
+            }
+        }
+        if (worstCandidate != null && candidate.compareTo(worstCandidate) < 0) {
+            meshBuildQueue.remove(worstCandidate);
+            queuedMeshBuildKeys.remove(worstCandidate.meshKey);
+            queuedMeshBuildKeys.add(candidate.meshKey);
             meshBuildQueue.add(candidate);
         }
     }
@@ -2862,7 +3684,7 @@ final class OpenGlRenderer {
         }
     }
 
-    private void logMeshProfile(int rebuiltMeshCount, int visibleChunkCount, long elapsedNs) {
+    private void logMeshProfile(int rebuiltMeshCount, int promotedChunkCount, long elapsedNs) {
         if (!GameConfig.ENABLE_FRAME_PROFILING) {
             return;
         }
@@ -2881,11 +3703,26 @@ final class OpenGlRenderer {
             }
         }
         System.out.println(String.format(Locale.ROOT,
-            "OpenGlRenderer mesh rebuilt=%d resident=%d visibleChunks=%d ms=%.3f",
+            "OpenGlRenderer mesh rebuilt=%d resident=%d promotedChunks=%d ms=%.3f",
             rebuiltMeshCount,
             residentCount,
-            visibleChunkCount,
+            promotedChunkCount,
             elapsedNs / 1_000_000.0));
+    }
+
+    private int residentChunkMeshCount() {
+        int count = 0;
+        for (ChunkMesh mesh : chunkMeshes.values()) if (mesh.resident) count++;
+        return count;
+    }
+
+    private boolean hasResidentChunkMesh() {
+        for (ChunkMesh mesh : chunkMeshes.values()) {
+            if (mesh.resident) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int getChunkRenderRadius(PlayerState player) {
@@ -2895,9 +3732,39 @@ final class OpenGlRenderer {
         return clamp(radius + RENDER_EDGE_PADDING_CHUNKS, GameConfig.MIN_RENDER_DISTANCE, GameConfig.MAX_RENDER_DISTANCE_CHUNKS);
     }
 
+    private int getMeshBuildRadius(PlayerState player) {
+        int targetRadius = getChunkRenderRadius(player);
+        int currentRadius = meshBuildRadiusController.current(targetRadius);
+        int playerChunkX = worldToChunk((int) Math.floor(player.x));
+        int playerChunkZ = worldToChunk((int) Math.floor(player.z));
+        boolean currentRadiusReady = hasCompleteMeshCoverage(playerChunkX, playerChunkZ, currentRadius);
+        return meshBuildRadiusController.update(targetRadius, currentRadiusReady);
+    }
+
+    private boolean hasCompleteMeshCoverage(int playerChunkX, int playerChunkZ, int radius) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (!world.isChunkLoaded(playerChunkX + dx, playerChunkZ + dz)) {
+                    return false;
+                }
+            }
+        }
+        for (Chunk chunk : loadedChunkSnapshot) {
+            int horizontalDistance = Math.max(Math.abs(chunk.chunkX - playerChunkX), Math.abs(chunk.chunkZ - playerChunkZ));
+            if (horizontalDistance > radius || chunk.isEmpty()) {
+                continue;
+            }
+            ChunkMesh mesh = chunkMeshes.get(chunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ));
+            if (mesh == null || !mesh.resident) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private int dynamicChunkUploadBudget() {
         if (currentRenderDistanceChunks > 16) {
-            return Settings.goodGraphics() ? 96 : 64;
+            return Settings.goodGraphics() ? 8 : 6;
         }
         if (debugFps > 0.0) {
             double frameTimeMs = 1000.0 / debugFps;
@@ -2932,30 +3799,29 @@ final class OpenGlRenderer {
         return MIN_CHUNK_UPLOADS_PER_FRAME;
     }
 
+    private int dynamicMeshBuildInFlightLimit() {
+        if (debugFps > 0.0 && debugFps < 45.0) {
+            return Math.min(MAX_MESH_BUILDS_IN_FLIGHT, 2);
+        }
+        if (debugFps > 0.0 && debugFps < 55.0) {
+            return Math.min(MAX_MESH_BUILDS_IN_FLIGHT, MESH_THREAD_COUNT);
+        }
+        return MAX_MESH_BUILDS_IN_FLIGHT;
+    }
+
     private int dynamicMeshUploadBudget() {
         int backlog = completedImmediateMeshBuilds.size() + completedMeshBuilds.size();
+        if (backlog > 500) {
+            return MAX_BACKLOG_CHUNK_UPLOADS_PER_FRAME;
+        }
         if (!completedImmediateMeshBuilds.isEmpty()) {
             return MAX_IMMEDIATE_CHUNK_UPLOADS_PER_FRAME;
         }
-        if (backlog > 4096) {
-            if (debugFps >= 45.0 || debugFps <= 0.0) {
-                return MAX_BACKLOG_CHUNK_UPLOADS_PER_FRAME;
-            }
-            return debugFps >= 32.0 ? 12 : 4;
+        if (backlog >= MAX_CATCH_UP_CHUNK_UPLOADS_PER_FRAME
+            && debugMeshUploadNanosLastFrame < 1_000_000L) {
+            return MAX_CATCH_UP_CHUNK_UPLOADS_PER_FRAME;
         }
-        if (backlog > 1024) {
-            if (debugFps >= 45.0 || debugFps <= 0.0) {
-                return 18;
-            }
-            return debugFps >= 32.0 ? 10 : 4;
-        }
-        if (backlog > 512) {
-            return debugFps >= 45.0 || debugFps <= 0.0 ? 12 : 6;
-        }
-        if (debugFps >= 55.0 || debugFps <= 0.0) {
-            return 6;
-        }
-        if (debugFps >= 45.0) {
+        if (debugFps > 0.0 && debugFps < 45.0) {
             return 4;
         }
         return MAX_CHUNK_UPLOADS_PER_FRAME;
@@ -2985,6 +3851,10 @@ final class OpenGlRenderer {
     private int chunkZFromKey(long key) {
         int packed = (int) ((key >> 12) & 0x3FFFFFFL);
         return packed >= 0x2000000 ? packed - 0x4000000 : packed;
+    }
+
+    private int chunkYFromKey(long key) {
+        return (int) (key & 0xFFFL);
     }
 
     private int worldToChunk(int coordinate) {
@@ -3860,7 +4730,7 @@ final class OpenGlRenderer {
         glEnd();
     }
 
-    private void renderOverlay(PlayerState player, PlayerInventory inventory, RayHit hoveredBlock, boolean paused, boolean inventoryOpen, int inventoryScreenMode, ContainerInventory chestContainer, FurnaceBlockEntity furnace, boolean deathScreenActive, int deathSelection, boolean mainMenuActive, int mainMenuScreen, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int mainMenuScrollOffset, String loadedWorldName, boolean showDebugInfo, boolean hideHud, int pauseSelection, boolean gameModeSwitcherActive, int gameModeSelection, byte selectedBlock, int selectedSlot, int creativeTab, int creativeScrollOffset, boolean creativeMode, boolean thirdPersonView, int renderDistanceChunks, int fovDegrees, double timeOfDay, double mouseX, double mouseY, ChatSystem chat, boolean showPlayerList, List<PlayerListEntry> playerList) {
+    private void renderOverlay(PlayerState player, PlayerInventory inventory, RayHit hoveredBlock, boolean paused, boolean inventoryOpen, int inventoryScreenMode, ContainerInventory chestContainer, FurnaceBlockEntity furnace, boolean deathScreenActive, int deathSelection, boolean mainMenuActive, int mainMenuScreen, boolean optionsOpenedFromPause, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, boolean createWorldAllowCheats, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int mainMenuScrollOffset, String loadedWorldName, boolean showDebugInfo, boolean hideHud, int pauseSelection, boolean gameModeSwitcherActive, int gameModeSelection, byte selectedBlock, int selectedSlot, int creativeTab, int creativeScrollOffset, boolean creativeMode, boolean thirdPersonView, int renderDistanceChunks, int fovDegrees, double timeOfDay, double mouseX, double mouseY, ChatSystem chat, boolean showPlayerList, List<PlayerListEntry> playerList) {
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
         glLoadIdentity();
@@ -3877,8 +4747,10 @@ final class OpenGlRenderer {
 
         boolean minimalHud = player.spectatorMode;
         boolean blockingOverlay = paused || inventoryOpen || deathScreenActive || mainMenuActive;
-        if (!hideHud && !minimalHud && !blockingOverlay) {
-            drawCrosshair();
+        if (!hideHud && !minimalHud && !inventoryOpen && !deathScreenActive && !mainMenuActive) {
+            if (!paused) {
+                drawCrosshair();
+            }
             drawHotbar(inventory, selectedSlot);
             if (!player.creativeMode) {
                 drawHealthBar(player.health, inventory);
@@ -3894,8 +4766,8 @@ final class OpenGlRenderer {
         if (!blockingOverlay && player.fireTimer > 0.0) {
             renderFireOverlay(player.fireTimer);
         }
-        if (!hideHud && showDebugInfo) {
-            renderDebugOverlay(player, selectedBlock, creativeMode, timeOfDay);
+        if (!hideHud && showDebugInfo && !mainMenuActive && !deathScreenActive) {
+            renderDebugOverlay(player, hoveredBlock, selectedBlock);
         }
         if (!mainMenuActive && !deathScreenActive) {
             renderChat(chat);
@@ -3904,7 +4776,7 @@ final class OpenGlRenderer {
             renderPlayerListOverlay(playerList);
         }
         if (mainMenuActive) {
-            renderMainMenu(mainMenuScreen, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, renderDistanceChunks, fovDegrees);
+            renderMainMenu(mainMenuScreen, optionsOpenedFromPause, mainMenuSelection, mainMenuWorldActionsEnabled, createWorldName, createWorldSeed, createWorldGameMode, createWorldAllowCheats, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField, renameWorldName, multiplayerName, multiplayerHost, multiplayerPort, multiplayerStatus, lanGameMode, lanAllowCheats, worlds, selectedWorldIndex, mainMenuScrollOffset, loadedWorldName, renderDistanceChunks, fovDegrees);
         }
         if (deathScreenActive) {
             renderDeathScreen(deathSelection);
@@ -3928,28 +4800,58 @@ final class OpenGlRenderer {
         if (chat == null) {
             return;
         }
-        if (!chat.isActive()) {
-            return;
-        }
-        List<String> messages = chat.visibleMessages();
+        List<ChatSystem.VisibleMessage> messages = chat.renderMessages();
 
-        float uiScale = getUiScale();
+        float uiScale = getChatUiScale();
         float lineHeight = 18.0f * uiScale;
         float x = 14.0f * uiScale;
         float textScale = uiScale * 0.78f;
         float maxTextWidth = Math.max(96.0f * uiScale, framebufferWidth - 36.0f * uiScale);
-        List<String> wrappedMessages = wrapChatMessages(messages, textScale, maxTextWidth);
+        int maxLines = Math.max(1, (int) ((framebufferHeight - 110.0f * uiScale) / lineHeight));
+        List<ChatRenderLine> wrappedMessages = wrapChatMessages(messages, textScale, maxTextWidth, maxLines, chat.scrollOffset());
         float y = framebufferHeight - 78.0f * uiScale - wrappedMessages.size() * lineHeight;
-        for (String message : wrappedMessages) {
-            float width = Math.min(framebufferWidth - 28.0f * uiScale, measureTextWidth(message, textScale) + 12.0f * uiScale);
-            drawRect(x - 5.0f * uiScale, y - 12.0f * uiScale, width, 17.0f * uiScale, 0.02f, 0.02f, 0.03f, 0.44f);
-            drawShadowText(x, y, textScale, message, 0.92f, 0.94f, 0.98f);
+        for (ChatRenderLine message : wrappedMessages) {
+            float width = Math.min(framebufferWidth - 28.0f * uiScale, measureTextWidth(message.text, textScale) + 12.0f * uiScale);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            drawRect(x - 5.0f * uiScale, y - 12.0f * uiScale, width, 17.0f * uiScale, 0.02f, 0.02f, 0.03f, 0.44f * message.alpha);
+            drawShadowText(x, y, textScale, message.text, 0.92f, 0.94f, 0.98f, message.alpha);
             y += lineHeight;
         }
 
         if (chat.isActive()) {
             String input = "> " + chat.inputText() + "_";
             float inputY = framebufferHeight - 34.0f * uiScale;
+            List<ChatSystem.CommandSuggestion> suggestions = chat.commandSuggestions();
+            if (!suggestions.isEmpty()) {
+                float suggestionScale = uiScale * 0.72f;
+                float suggestionLineHeight = 18.0f * uiScale;
+                float suggestionWidth = 180.0f * uiScale;
+                for (ChatSystem.CommandSuggestion suggestion : suggestions) {
+                    suggestionWidth = Math.max(suggestionWidth, measureTextWidth(suggestion.text(), suggestionScale) + 14.0f * uiScale);
+                }
+                suggestionWidth = Math.min(framebufferWidth - 20.0f * uiScale, suggestionWidth);
+                float suggestionY = inputY - 22.0f * uiScale - suggestions.size() * suggestionLineHeight;
+                for (ChatSystem.CommandSuggestion suggestion : suggestions) {
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    if (suggestion.selected()) {
+                        drawRect(10.0f * uiScale, suggestionY, suggestionWidth, suggestionLineHeight,
+                            0.28f, 0.34f, 0.44f, 0.94f);
+                    } else {
+                        drawRect(10.0f * uiScale, suggestionY, suggestionWidth, suggestionLineHeight,
+                            0.02f, 0.02f, 0.03f, 0.88f);
+                    }
+                    String suggestionText = trimTextToWidth(
+                        suggestion.text(), suggestionScale, suggestionWidth - 12.0f * uiScale
+                    );
+                    drawShadowText(16.0f * uiScale, suggestionY + 13.0f * uiScale, suggestionScale,
+                        suggestionText, 0.94f, 0.96f, 1.0f);
+                    suggestionY += suggestionLineHeight;
+                }
+            }
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             drawRect(10.0f * uiScale, inputY - 18.0f * uiScale, framebufferWidth - 20.0f * uiScale, 26.0f * uiScale, 0.02f, 0.02f, 0.03f, 0.74f);
             drawOutline(10.0f * uiScale, inputY - 18.0f * uiScale, framebufferWidth - 20.0f * uiScale, 26.0f * uiScale, uiScale, 0.50f, 0.64f, 0.82f, 0.88f);
             drawShadowText(18.0f * uiScale, inputY, uiScale * 0.86f, trimTextToWidth(input, uiScale * 0.86f, framebufferWidth - 36.0f * uiScale), 1.0f, 1.0f, 1.0f);
@@ -4002,16 +4904,30 @@ final class OpenGlRenderer {
         }
     }
 
-    private List<String> wrapChatMessages(List<String> messages, float scale, float maxWidth) {
-        ArrayList<String> wrapped = new ArrayList<>();
-        for (String message : messages) {
-            wrapChatLine(message == null ? "" : message, scale, maxWidth, wrapped);
+    private List<ChatRenderLine> wrapChatMessages(List<ChatSystem.VisibleMessage> messages, float scale, float maxWidth, int maxLines, int scrollOffset) {
+        ArrayList<ChatRenderLine> wrapped = new ArrayList<>();
+        for (ChatSystem.VisibleMessage message : messages) {
+            ArrayList<String> lines = new ArrayList<>();
+            wrapChatLine(message.text(), scale, maxWidth, lines);
+            for (String line : lines) {
+                wrapped.add(new ChatRenderLine(line, message.alpha()));
+            }
         }
-        int maxLines = 8;
-        if (wrapped.size() <= maxLines) {
-            return wrapped;
+        int maxScrollOffset = Math.max(0, wrapped.size() - maxLines);
+        int effectiveScrollOffset = Math.min(maxScrollOffset, Math.max(0, scrollOffset));
+        int end = wrapped.size() - effectiveScrollOffset;
+        int start = Math.max(0, end - maxLines);
+        return new ArrayList<>(wrapped.subList(start, end));
+    }
+
+    private static final class ChatRenderLine {
+        private final String text;
+        private final float alpha;
+
+        private ChatRenderLine(String text, float alpha) {
+            this.text = text;
+            this.alpha = alpha;
         }
-        return new ArrayList<>(wrapped.subList(wrapped.size() - maxLines, wrapped.size()));
     }
 
     private void wrapChatLine(String line, float scale, float maxWidth, ArrayList<String> output) {
@@ -4315,68 +5231,231 @@ final class OpenGlRenderer {
         drawRect(x + 2.0f * scale, y + 6.0f * scale, Math.min(3.0f * scale, width), 1.0f * scale, r * 0.75f, g * 0.75f, b * 0.75f, alpha);
     }
 
-    private void renderDebugOverlay(PlayerState player, byte selectedBlock, boolean creativeMode, double timeOfDay) {
-        float uiScale = getUiScale();
-        float panelX = 12.0f * uiScale;
-        float panelY = 12.0f * uiScale;
-        float panelWidth = 610.0f * uiScale;
-        float panelHeight = 288.0f * uiScale;
-        drawRect(panelX, panelY, panelWidth, panelHeight, 0.0f, 0.0f, 0.0f, 0.58f);
+    private void renderDebugOverlay(PlayerState player, RayHit hoveredBlock, byte selectedBlock) {
+        updateDebugInfo(player, hoveredBlock, selectedBlock);
+        boolean russian = Settings.isRussian();
+        ArrayList<DebugLine> left = new ArrayList<>();
+        ArrayList<DebugLine> right = new ArrayList<>();
 
-        int blockX = (int) Math.floor(player.x);
-        int blockY = (int) Math.floor(player.y);
-        int blockZ = (int) Math.floor(player.z);
-        int chunkX = Math.floorDiv(blockX, GameConfig.CHUNK_SIZE);
-        int chunkZ = Math.floorDiv(blockZ, GameConfig.CHUNK_SIZE);
-        int sectionIndex = GameConfig.sectionIndexForY(blockY);
-        int localX = Math.floorMod(blockX, GameConfig.CHUNK_SIZE);
-        int localY = GameConfig.localYForWorldY(blockY);
-        int localZ = Math.floorMod(blockZ, GameConfig.CHUNK_SIZE);
-        int underY = (int) Math.floor(player.y - 0.12);
-        BlockType underType = Blocks.typeFromLegacyId(world.getBlock(blockX, underY, blockZ));
-        String facing = facingName(player.yaw);
+        String titleText = "TinyCraft v" + GameConfig.VERSION + " | " + format(debugInfo.fps)
+            + " FPS | " + format(debugInfo.frameTimeMs) + " ms";
+        left.add(debugInfo.hasLowFps() ? DebugLine.danger(titleText) : DebugLine.title(titleText));
+        left.add(DebugLine.normal("XYZ: " + format(debugInfo.x) + " / " + format(debugInfo.y) + " / " + format(debugInfo.z)));
+        left.add(DebugLine.muted((russian ? "Блок: " : "Block: ")
+            + debugInfo.blockX + " / " + debugInfo.blockY + " / " + debugInfo.blockZ));
+        left.add(DebugLine.normal((russian ? "Взгляд: " : "Facing: ") + debugInfo.facing
+            + " | yaw " + format(debugInfo.yawDegrees) + " | pitch " + format(debugInfo.pitchDegrees)));
+        left.add(DebugLine.normal((russian ? "Биом: " : "Biome: ") + debugInfo.biome));
+        String lightText = (russian ? "Освещение: ~" : "Light: ~") + debugInfo.lightLevel + "/15 "
+            + (debugInfo.skyVisible ? (russian ? "(небо)" : "(sky)") : (russian ? "(под землёй)" : "(underground)"));
+        left.add(debugInfo.lightLevel <= 4 ? DebugLine.warning(lightText) : DebugLine.normal(lightText));
+        left.add(DebugLine.muted((russian ? "Режим: " : "Mode: ") + debugInfo.gameMode
+            + " | " + (russian ? "измерение " : "dimension ") + debugInfo.dimensionId));
 
-        drawText(20.0f * uiScale, 28.0f * uiScale, uiScale, "TinyCraft OpenGL", 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 50.0f * uiScale, uiScale, "FPS: " + format(debugFps), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 72.0f * uiScale, uiScale, "XYZ: " + format(player.x) + " / " + format(player.y) + " / " + format(player.z), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 94.0f * uiScale, uiScale, "Chunk: " + chunkX + " / " + sectionIndex + " / " + chunkZ + " local " + localX + " / " + localY + " / " + localZ, 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 116.0f * uiScale, uiScale, "Facing: " + facing + " yaw " + format(Math.toDegrees(player.yaw)) + " pitch " + format(Math.toDegrees(player.pitch)), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 138.0f * uiScale, uiScale, "Biome: " + world.getBiomeName(blockX, blockZ), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 160.0f * uiScale, uiScale, "Surface: approx " + world.getGeneratedSurfaceHeight(blockX, blockZ) + " actual " + world.getActualSurfaceHeight(blockX, blockZ), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 182.0f * uiScale, uiScale, "Seed: " + Long.toUnsignedString(world.getSeed(), 16), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 204.0f * uiScale, uiScale, "Status: " + world.getChunkStatus(chunkX, chunkZ) + " Section: " + sectionIndex, 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 226.0f * uiScale, uiScale, "Region: " + world.getRegionFileName(chunkX, chunkZ), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 248.0f * uiScale, uiScale, "Under: " + underType.namespacedId + " y=" + underY, 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 270.0f * uiScale, uiScale, world.getDensityDebugInfo(blockX, blockY, blockZ), 1.0f, 1.0f, 1.0f);
-        drawText(20.0f * uiScale, 292.0f * uiScale, uiScale,
-            "Mesh: dirty=" + dirtyChunkMeshes.size()
-                + " immediate=" + immediateChunkMeshes.size()
-                + " inFlight=" + meshBuildsInFlight.size()
-                + " ready=" + (completedImmediateMeshBuilds.size() + completedMeshBuilds.size())
-                + " readyKeys=" + meshBuildsReady.size()
-                + " uploaded=" + debugUploadedMeshesLastFrame
-                + " rejected=" + debugRejectedMeshVersionsLastFrame,
-            1.0f, 1.0f, 1.0f);
+        right.add(DebugLine.title((russian ? "Система" : "System")
+            + " | " + framebufferWidth + "x" + framebufferHeight));
+        right.add(DebugLine.muted("OS: " + compactDebugValue(debugInfo.osDescription, 58)));
+        right.add(DebugLine.muted("Java: " + compactDebugValue(debugInfo.javaDescription, 58)));
+        right.add(DebugLine.muted("CPU: " + compactDebugValue(debugInfo.cpuDescription, 52)
+            + " | " + debugInfo.logicalProcessors + (russian ? " потоков" : " threads")));
+        right.add(DebugLine.muted("GPU: " + compactDebugValue(debugInfo.gpuDescription, 58)));
+        right.add(DebugLine.muted("OpenGL: " + compactDebugValue(debugInfo.openGlDescription, 58)));
+        String memoryText = (russian ? "Память: " : "Memory: ") + debugInfo.usedMemoryMiB + " / "
+            + debugInfo.allocatedMemoryMiB + " MiB (max " + debugInfo.maxMemoryMiB + ")";
+        right.add(debugInfo.hasHighMemoryUsage() ? DebugLine.danger(memoryText) : DebugLine.normal(memoryText));
+
+        right.add(DebugLine.title((russian ? "Чанк: " : "Chunk: ")
+            + debugInfo.chunkX + " / " + debugInfo.chunkY + " / " + debugInfo.chunkZ));
+        right.add(DebugLine.muted((russian ? "Локально: " : "Local: ")
+            + debugInfo.localX + " / " + debugInfo.localY + " / " + debugInfo.localZ));
+        String statusText = (russian ? "Статус: " : "Status: ") + debugInfo.chunkStatus;
+        right.add("FULL".equals(debugInfo.chunkStatus) ? DebugLine.normal(statusText) : DebugLine.warning(statusText));
+        right.add(DebugLine.muted((russian ? "Регион: " : "Region: ") + debugInfo.region));
+        right.add(DebugLine.muted((russian ? "Поверхность: генератор " : "Surface: generated ")
+            + debugInfo.generatedSurface + (russian ? " | мир " : " | actual ") + debugInfo.actualSurface));
+        if (debugInfo.hasTargetBlock) {
+            right.add(DebugLine.normal((russian ? "Цель: " : "Target: ") + debugInfo.targetName));
+            right.add(DebugLine.muted(debugInfo.targetId + " @ " + debugInfo.targetX + ", "
+                + debugInfo.targetY + ", " + debugInfo.targetZ + " data=" + debugInfo.targetStateData));
+        } else {
+            right.add(DebugLine.muted(russian ? "Цель: блока нет" : "Target: no block"));
+        }
+        right.add(DebugLine.normal((russian ? "В руке: " : "Held: ") + debugInfo.heldItemName));
+        int queuedMeshes = pendingDirtyMeshBuildKeys.size() + queuedMeshBuildKeys.size();
+        String meshText = (russian ? "Меши: " : "Meshes: ") + "resident=" + residentChunkMeshCount()
+            + " queued=" + queuedMeshes + " active=" + meshBuildsInFlight.size();
+        right.add(queuedMeshes > 256 ? DebugLine.warning(meshText) : DebugLine.muted(meshText));
+        right.add(DebugLine.muted((russian ? "Отрисовка: " : "Draws: ")
+            + "opaque=" + debugOpaqueRegionDrawCallsLastFrame
+            + " transparent=" + debugTransparentChunkDrawCallsLastFrame));
+        right.add(DebugLine.muted("Seed: " + debugInfo.seed));
+
+        drawDebugPanels(left, right);
+    }
+
+    private void updateDebugInfo(PlayerState player, RayHit hoveredBlock, byte selectedBlock) {
+        debugInfo.fps = debugFps;
+        debugInfo.frameTimeMs = DebugInfo.frameTimeMs(debugFps);
+        debugInfo.x = player.x;
+        debugInfo.y = player.y;
+        debugInfo.z = player.z;
+        debugInfo.yawDegrees = Math.toDegrees(player.yaw);
+        debugInfo.pitchDegrees = Math.toDegrees(player.pitch);
+        debugInfo.blockX = (int) Math.floor(player.x);
+        debugInfo.blockY = (int) Math.floor(player.y);
+        debugInfo.blockZ = (int) Math.floor(player.z);
+        debugInfo.chunkX = Math.floorDiv(debugInfo.blockX, GameConfig.CHUNK_SIZE);
+        debugInfo.chunkY = GameConfig.sectionIndexForY(debugInfo.blockY);
+        debugInfo.chunkZ = Math.floorDiv(debugInfo.blockZ, GameConfig.CHUNK_SIZE);
+        debugInfo.localX = Math.floorMod(debugInfo.blockX, GameConfig.CHUNK_SIZE);
+        debugInfo.localY = GameConfig.localYForWorldY(debugInfo.blockY);
+        debugInfo.localZ = Math.floorMod(debugInfo.blockZ, GameConfig.CHUNK_SIZE);
+        debugInfo.dimensionId = player.dimensionId;
+        debugInfo.facing = facingName(player.yaw);
+        debugInfo.gameMode = player.spectatorMode
+            ? (Settings.isRussian() ? "Наблюдатель" : "Spectator")
+            : player.creativeMode
+                ? (Settings.isRussian() ? "Творческий" : "Creative")
+                : (Settings.isRussian() ? "Выживание" : "Survival");
+        debugInfo.heldItemName = selectedBlock == GameConfig.AIR
+            ? (Settings.isRussian() ? "пусто" : "empty")
+            : InventoryItems.name(selectedBlock);
+
+        debugInfo.hasTargetBlock = hoveredBlock != null;
+        if (hoveredBlock != null) {
+            byte targetBlock = world.getBlock(hoveredBlock.x, hoveredBlock.y, hoveredBlock.z);
+            BlockType targetType = Blocks.typeFromLegacyId(targetBlock);
+            BlockState targetState = world.getBlockState(hoveredBlock.x, hoveredBlock.y, hoveredBlock.z);
+            debugInfo.targetX = hoveredBlock.x;
+            debugInfo.targetY = hoveredBlock.y;
+            debugInfo.targetZ = hoveredBlock.z;
+            debugInfo.targetName = InventoryItems.name(targetBlock);
+            debugInfo.targetId = targetType.namespacedId;
+            debugInfo.targetStateData = targetState.data;
+        }
+
+        if (debugInfo.shouldRefreshSlow(System.nanoTime(), debugInfo.chunkX, debugInfo.chunkY, debugInfo.chunkZ)) {
+            debugInfo.biome = world.getBiomeName(debugInfo.blockX, debugInfo.blockZ);
+            debugInfo.generatedSurface = world.getGeneratedSurfaceHeight(debugInfo.blockX, debugInfo.blockZ);
+            debugInfo.actualSurface = world.getActualSurfaceHeight(debugInfo.blockX, debugInfo.blockZ);
+            debugInfo.chunkStatus = world.getChunkStatus(debugInfo.chunkX, debugInfo.chunkZ).name();
+            debugInfo.region = world.getRegionFileName(debugInfo.chunkX, debugInfo.chunkZ);
+            debugInfo.seed = Long.toUnsignedString(world.getSeed(), 16);
+            Runtime runtime = Runtime.getRuntime();
+            debugInfo.refreshMemory(runtime);
+            debugInfo.refreshSystemInfo(
+                runtime,
+                safeOpenGlString(GL_VENDOR),
+                safeOpenGlString(GL_RENDERER),
+                safeOpenGlString(GL_VERSION)
+            );
+        }
+        debugInfo.skyVisible = debugInfo.blockY >= debugInfo.actualSurface;
+        debugInfo.lightLevel = DebugInfo.approximateLightLevel(currentDaylight, debugInfo.skyVisible);
+    }
+
+    private void drawDebugPanels(List<DebugLine> left, List<DebugLine> right) {
+        float scale = DebugInfo.overlayScale(getInventoryUiScale(), framebufferWidth);
+        float margin = 8.0f * scale;
+        float gap = 8.0f * scale;
+        float leftWidth = debugPanelWidth(left, scale);
+        float rightWidth = debugPanelWidth(right, scale);
+        float leftHeight = debugPanelHeight(left, scale);
+        boolean sideBySide = leftWidth + rightWidth + margin * 3.0f <= framebufferWidth;
+        float rightX = framebufferWidth - margin - rightWidth;
+        float rightY = sideBySide ? margin : margin + leftHeight + gap;
+        drawDebugPanel(left, margin, margin, leftWidth, scale, false);
+        drawDebugPanel(right, rightX, rightY, rightWidth, scale, true);
+    }
+
+    private float debugPanelWidth(List<DebugLine> lines, float scale) {
+        float width = 0.0f;
+        for (DebugLine line : lines) {
+            width = Math.max(width, measureTextWidth(line.text, scale));
+        }
+        return width + 16.0f * scale;
+    }
+
+    private float debugPanelHeight(List<DebugLine> lines, float scale) {
+        return 12.0f * scale + lines.size() * 18.0f * scale;
+    }
+
+    private void drawDebugPanel(List<DebugLine> lines, float x, float y, float width, float scale,
+            boolean rightAligned) {
+        float padding = 8.0f * scale;
+        float textY = y + 7.0f * scale;
+        for (DebugLine line : lines) {
+            float textWidth = measureTextWidth(line.text, scale);
+            float textX = DebugInfo.alignedTextX(x, width, padding, textWidth, rightAligned);
+            drawShadowText(textX, textY, scale, line.text, line.red, line.green, line.blue);
+            textY += 18.0f * scale;
+        }
+    }
+
+    private String safeOpenGlString(int name) {
+        String value = glGetString(name);
+        return value == null || value.trim().isEmpty() ? "unknown" : value.trim();
+    }
+
+    private String compactDebugValue(String value, int maxCharacters) {
+        if (value == null || value.length() <= maxCharacters) {
+            return value == null ? "unknown" : value;
+        }
+        return value.substring(0, Math.max(1, maxCharacters - 3)) + "...";
     }
 
     private String facingName(double yaw) {
         double degrees = Math.toDegrees(yaw);
         double normalized = ((degrees % 360.0) + 360.0) % 360.0;
         if (normalized >= 45.0 && normalized < 135.0) {
-            return "south (+Z)";
+            return Settings.isRussian() ? "юг (+Z)" : "south (+Z)";
         }
         if (normalized >= 135.0 && normalized < 225.0) {
-            return "west (-X)";
+            return Settings.isRussian() ? "запад (-X)" : "west (-X)";
         }
         if (normalized >= 225.0 && normalized < 315.0) {
-            return "north (-Z)";
+            return Settings.isRussian() ? "север (-Z)" : "north (-Z)";
         }
-        return "east (+X)";
+        return Settings.isRussian() ? "восток (+X)" : "east (+X)";
+    }
+
+    private static final class DebugLine {
+        final String text;
+        final float red;
+        final float green;
+        final float blue;
+
+        DebugLine(String text, float red, float green, float blue) {
+            this.text = text;
+            this.red = red;
+            this.green = green;
+            this.blue = blue;
+        }
+
+        static DebugLine title(String text) {
+            return new DebugLine(text, 0.62f, 0.88f, 1.0f);
+        }
+
+        static DebugLine normal(String text) {
+            return new DebugLine(text, 0.96f, 0.96f, 0.96f);
+        }
+
+        static DebugLine muted(String text) {
+            return new DebugLine(text, 0.72f, 0.78f, 0.84f);
+        }
+
+        static DebugLine warning(String text) {
+            return new DebugLine(text, 1.0f, 0.72f, 0.24f);
+        }
+
+        static DebugLine danger(String text) {
+            return new DebugLine(text, 1.0f, 0.30f, 0.24f);
+        }
     }
 
     private void renderPauseMenu(int pauseSelection) {
         float uiScale = Math.max(1.0f, getUiScale());
-        drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.0f, 0.0f, 0.0f, 0.56f);
+        drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.0f, 0.0f, 0.0f, 0.42f);
         drawCenteredShadowText(74.0f * uiScale, uiScale * 1.2f, Settings.isRussian() ? "\u041c\u0435\u043d\u044e \u0438\u0433\u0440\u044b" : "Game menu", 1.0f, 1.0f, 1.0f);
 
         float wideWidth = 398.0f * uiScale;
@@ -4391,12 +5470,17 @@ final class OpenGlRenderer {
     }
 
     private void drawSettingsSlider(int optionIndex, float y, float uiScale, String label, int value, int min, int max, boolean selected) {
+        double knobT = (value - min) / (double) Math.max(1, max - min);
+        drawSettingsSlider(optionIndex, y, uiScale, label, knobT, Integer.toString(value), selected);
+    }
+
+    private void drawSettingsSlider(int optionIndex, float y, float uiScale, String label, double normalizedValue, String displayValue, boolean selected) {
         float sliderWidth = optionsControlWidth(uiScale);
         float sliderHeight = 8.0f * uiScale;
         float x = optionsControlX(optionIndex, uiScale);
-        float knobT = (value - min) / (float) Math.max(1, max - min);
+        float knobT = (float) clamp(normalizedValue, 0.0, 1.0);
         float knobX = x + knobT * sliderWidth;
-        String text = label + ": " + value;
+        String text = label + ": " + displayValue;
         float textScale = text.length() > 25 ? uiScale * 0.70f : uiScale * 0.78f;
         drawShadowText(x + sliderWidth * 0.5f - measureTextWidth(text, textScale) * 0.5f, y - 12.0f * uiScale, textScale, text, selected ? 1.0f : 0.86f, selected ? 0.94f : 0.86f, selected ? 0.68f : 0.86f);
         drawRect(x, y, sliderWidth, sliderHeight, 0.20f, 0.22f, 0.24f, 0.95f);
@@ -4413,9 +5497,9 @@ final class OpenGlRenderer {
         drawCenteredMenuButtons(GameConfig.deathOptions(), deathSelection, 236.0f, 0.88f, 0.88f, 0.88f);
     }
 
-    private void renderMainMenu(int menuScreen, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int scrollOffset, String loadedWorldName, int renderDistanceChunks, int fovDegrees) {
+    private void renderMainMenu(int menuScreen, boolean optionsOpenedFromPause, int mainMenuSelection, boolean mainMenuWorldActionsEnabled, String createWorldName, String createWorldSeed, int createWorldGameMode, boolean createWorldAllowCheats, int createWorldDifficulty, int createWorldTerrainPreset, int activeMenuTextField, String renameWorldName, String multiplayerName, String multiplayerHost, String multiplayerPort, String multiplayerStatus, int lanGameMode, boolean lanAllowCheats, List<WorldInfo> worlds, int selectedWorldIndex, int scrollOffset, String loadedWorldName, int renderDistanceChunks, int fovDegrees) {
         float uiScale = Math.max(1.0f, getUiScale());
-        if (menuPanoramaReady || (loadedWorldName != null && !loadedWorldName.trim().isEmpty())) {
+        if (menuPanoramaReady || optionsOpenedFromPause) {
             drawRect(0.0f, 0.0f, framebufferWidth, framebufferHeight, 0.02f, 0.025f, 0.03f,
                 menuScreen == GameConfig.MENU_SCREEN_MAIN ? 0.36f : 0.58f);
         } else {
@@ -4425,7 +5509,7 @@ final class OpenGlRenderer {
         if (menuScreen == GameConfig.MENU_SCREEN_SINGLEPLAYER) {
             renderSingleplayerMenu(mainMenuSelection, mainMenuWorldActionsEnabled, worlds, selectedWorldIndex, scrollOffset);
         } else if (menuScreen == GameConfig.MENU_SCREEN_CREATE_WORLD) {
-            renderCreateWorldMenu(mainMenuSelection, createWorldName, createWorldSeed, createWorldGameMode, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField);
+            renderCreateWorldMenu(mainMenuSelection, createWorldName, createWorldSeed, createWorldGameMode, createWorldAllowCheats, createWorldDifficulty, createWorldTerrainPreset, activeMenuTextField);
         } else if (menuScreen == GameConfig.MENU_SCREEN_RENAME_WORLD) {
             renderRenameWorldMenu(mainMenuSelection, renameWorldName, activeMenuTextField);
         } else if (menuScreen == GameConfig.MENU_SCREEN_MULTIPLAYER) {
@@ -4528,8 +5612,12 @@ final class OpenGlRenderer {
         drawSettingsSlider(1, optionsFovSliderY(uiScale), uiScale, Settings.isRussian() ? "\u041f\u043e\u043b\u0435 \u0437\u0440\u0435\u043d\u0438\u044f" : "FOV", fovDegrees, 55, 100, mainMenuSelection == 1);
         drawSettingsSlider(2, optionsBrightnessSliderY(uiScale), uiScale, Settings.isRussian() ? "\u042f\u0440\u043a\u043e\u0441\u0442\u044c" : "Brightness", Settings.brightness, 0, 100, mainMenuSelection == 2);
         drawSettingsSlider(3, optionsVolumeSliderY(uiScale), uiScale, Settings.isRussian() ? "\u0417\u0432\u0443\u043a" : "Sound", Settings.masterVolume, 0, 100, mainMenuSelection == 3);
-        drawSettingsSlider(4, optionsFpsSliderY(uiScale), uiScale, Settings.isRussian() ? "\u041b\u0438\u043c\u0438\u0442 FPS" : "FPS Limit", Settings.savedMaxFps, 30, 240, mainMenuSelection == 4);
-        drawSettingsSlider(5, optionsInventoryUiSliderY(uiScale), uiScale, Settings.isRussian() ? "\u0420\u0430\u0437\u043c\u0435\u0440 \u0438\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u044f" : "Inventory UI Size", Settings.inventoryUiSize, 1, 4, mainMenuSelection == 5);
+        drawSettingsSlider(4, optionsFpsSliderY(uiScale), uiScale,
+            Settings.isRussian() ? "\u041c\u0430\u043a\u0441. \u0447\u0430\u0441\u0442\u043e\u0442\u0430 \u043a\u0430\u0434\u0440\u043e\u0432" : "Max Framerate",
+            Settings.maxFpsSliderPercent(Settings.savedMaxFps), Settings.maxFpsDisplayValue(Settings.savedMaxFps), mainMenuSelection == 4);
+        drawSettingsSlider(5, optionsGuiScaleSliderY(uiScale), uiScale,
+            Settings.isRussian() ? "\u041c\u0430\u0441\u0448\u0442\u0430\u0431 \u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441\u0430" : "GUI Scale",
+            Settings.guiScale / 4.0, Settings.guiScaleDisplayValue(), mainMenuSelection == 5);
 
         float actionWidth = optionsControlWidth(uiScale);
         float actionHeight = 46.0f * uiScale;
@@ -4554,7 +5642,7 @@ final class OpenGlRenderer {
         String backLabel = Settings.isRussian() ? "\u041d\u0430\u0437\u0430\u0434" : "Back";
         drawText(actionsX + actionWidth * 0.5f - measureTextWidth(backLabel, uiScale * 0.9f) * 0.5f, boxY + 29.0f * uiScale, uiScale * 0.9f, backLabel, 0.10f, 0.10f, 0.12f);
     }
-    private void renderCreateWorldMenu(int mainMenuSelection, String worldName, String seedText, int gameMode, int difficulty, int terrainPreset, int activeTextField) {
+    private void renderCreateWorldMenu(int mainMenuSelection, String worldName, String seedText, int gameMode, boolean allowCheats, int difficulty, int terrainPreset, int activeTextField) {
         float uiScale = Math.max(1.0f, getUiScale());
         drawCenteredShadowText(46.0f * uiScale, uiScale * 1.0f, Settings.isRussian() ? "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u043d\u043e\u0432\u044b\u0439 \u043c\u0438\u0440" : "Create New World", 0.96f, 0.96f, 0.96f);
 
@@ -4569,9 +5657,11 @@ final class OpenGlRenderer {
         float startX = framebufferWidth * 0.5f - (buttonWidth * 2.0f + gap) * 0.5f;
         drawMenuButton(startX, 224.0f * uiScale, buttonWidth, buttonHeight, (Settings.isRussian() ? "\u0420\u0435\u0436\u0438\u043c: " : "Game Mode: ") + gameModeName(gameMode), false, true, uiScale * 0.80f);
         drawMenuButton(startX + buttonWidth + gap, 224.0f * uiScale, buttonWidth, buttonHeight, (Settings.isRussian() ? "\u0421\u043b\u043e\u0436\u043d\u043e\u0441\u0442\u044c: " : "Difficulty: ") + GameConfig.difficultyOptions()[Math.max(0, Math.min(difficulty, GameConfig.difficultyOptions().length - 1))], false, true, uiScale * 0.80f);
-        float terrainButtonWidth = buttonWidth * 2.0f + gap;
         int terrainIndex = Math.max(0, Math.min(terrainPreset, GameConfig.terrainPresetOptions().length - 1));
-        drawMenuButton(startX, 282.0f * uiScale, terrainButtonWidth, buttonHeight, (Settings.isRussian() ? "\u0422\u0438\u043f \u043c\u0438\u0440\u0430: " : "World Type: ") + GameConfig.terrainPresetOptions()[terrainIndex], false, true, uiScale * 0.80f);
+        drawMenuButton(startX, 282.0f * uiScale, buttonWidth, buttonHeight, (Settings.isRussian() ? "\u0422\u0438\u043f \u043c\u0438\u0440\u0430: " : "World Type: ") + GameConfig.terrainPresetOptions()[terrainIndex], false, true, uiScale * 0.68f);
+        String cheatsLabel = (Settings.isRussian() ? "\u0427\u0438\u0442\u044b: " : "Allow Cheats: ")
+            + (allowCheats ? (Settings.isRussian() ? "\u0412\u043a\u043b" : "On") : (Settings.isRussian() ? "\u0412\u044b\u043a\u043b" : "Off"));
+        drawMenuButton(startX + buttonWidth + gap, 282.0f * uiScale, buttonWidth, buttonHeight, cheatsLabel, false, true, uiScale * 0.72f);
         drawShadowText(startX, 340.0f * uiScale, uiScale * 0.62f, gameModeHelp(gameMode), 0.70f, 0.72f, 0.76f);
 
         drawShadowText(panelX, 364.0f * uiScale, uiScale * 0.78f, Settings.isRussian() ? "Seed \u0433\u0435\u043d\u0435\u0440\u0430\u0442\u043e\u0440\u0430 \u043c\u0438\u0440\u0430" : "Seed for the World Generator", 0.82f, 0.82f, 0.82f);
@@ -5268,11 +6358,15 @@ final class OpenGlRenderer {
     }
 
     private void drawText(float x, float y, float scale, String text, float red, float green, float blue) {
+        drawText(x, y, scale, text, red, green, blue, 1.0f);
+    }
+
+    private void drawText(float x, float y, float scale, String text, float red, float green, float blue, float alpha) {
         text = normalizeUiText(text);
         if (text == null || text.isEmpty()) {
             return;
         }
-        drawTextTexture(x, y, scale, text, red, green, blue);
+        drawTextTexture(x, y, scale, text, red, green, blue, alpha);
     }
 
     private float measureTextWidth(String text, float scale) {
@@ -5340,13 +6434,13 @@ final class OpenGlRenderer {
         return count;
     }
 
-    private void drawTextTexture(float x, float y, float scale, String text, float red, float green, float blue) {
+    private void drawTextTexture(float x, float y, float scale, String text, float red, float green, float blue, float alpha) {
         TextTexture texture = getTextTexture(text, scale);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texture.textureId);
-        glColor4f(red, green, blue, 1.0f);
+        glColor4f(red, green, blue, alpha);
         glBegin(GL_QUADS);
         float top = y - texture.baseline;
         glTexCoord2f(0.0f, 0.0f);
@@ -5434,8 +6528,12 @@ final class OpenGlRenderer {
     }
 
     private void drawShadowText(float x, float y, float scale, String text, float red, float green, float blue) {
-        drawText(x + Math.max(1.0f, scale), y + Math.max(1.0f, scale), scale, text, 0.0f, 0.0f, 0.0f);
-        drawText(x, y, scale, text, red, green, blue);
+        drawShadowText(x, y, scale, text, red, green, blue, 1.0f);
+    }
+
+    private void drawShadowText(float x, float y, float scale, String text, float red, float green, float blue, float alpha) {
+        drawText(x + Math.max(1.0f, scale), y + Math.max(1.0f, scale), scale, text, 0.0f, 0.0f, 0.0f, alpha);
+        drawText(x, y, scale, text, red, green, blue, alpha);
     }
 
     private boolean loadMenuPanoramaTextures() {
@@ -5453,7 +6551,7 @@ final class OpenGlRenderer {
                     System.out.println("Menu panorama disabled: unreadable " + file.getPath());
                     return false;
                 }
-                menuPanoramaTextureIds[i] = uploadTexture(image, GL_LINEAR, GL_REPEAT);
+                menuPanoramaTextureIds[i] = uploadTexture(image, GL_LINEAR, GL_CLAMP_TO_EDGE);
             } catch (IOException | RuntimeException exception) {
                 deleteMenuPanoramaTextures();
                 System.out.println("Menu panorama disabled: " + exception.getMessage());
@@ -6044,15 +7142,16 @@ final class OpenGlRenderer {
             return;
         }
         long key = chunkKey(chunkX, chunkY, chunkZ);
-        if (!immediate && (meshBuildsInFlight.containsKey(key) || meshBuildsReady.containsKey(key))) {
-            return;
-        }
+        meshBuildRevisions.invalidate(key);
         dirtyChunkMeshes.add(key);
         if (immediate) {
             immediateChunkMeshes.add(key);
             meshBuildCooldownUntilNanos.remove(key);
         }
-        meshBuildsReady.remove(key);
+        if (meshBuildsInFlight.containsKey(key) || meshBuildsReady.containsKey(key)) {
+            return;
+        }
+        enqueueDirtyMeshBuild(key);
     }
 
     private UiRenderer.InventoryUiLayout buildInventoryLayout(boolean creativeMode, int creativeTab) {
@@ -6089,11 +7188,15 @@ final class OpenGlRenderer {
     }
 
     private float getHudInventoryScale() {
-        return getUiScale() * Settings.inventoryUiScale() / 1.18f;
+        return getUiScale() * Settings.guiScaleMultiplier(framebufferWidth, framebufferHeight) / 1.18f;
+    }
+
+    private float getChatUiScale() {
+        return getUiScale() * Settings.guiScaleMultiplier(framebufferWidth, framebufferHeight) / 1.18f;
     }
 
     private float getInventoryUiScale() {
-        float desired = Math.max(1.0f, framebufferHeight / 720.0f * 1.18f * Settings.inventoryUiScale());
+        float desired = Math.max(1.0f, framebufferHeight / 720.0f * 1.18f * Settings.guiScaleMultiplier(framebufferWidth, framebufferHeight));
         float maxByWidth = Math.max(0.85f, (framebufferWidth - 32.0f) / 470.0f);
         float maxByHeight = Math.max(0.85f, (framebufferHeight - 32.0f) / 388.0f);
         return Math.max(0.85f, Math.min(desired, Math.min(maxByWidth, maxByHeight)));
@@ -6111,21 +7214,169 @@ final class OpenGlRenderer {
         return String.format(Locale.US, "%.2f", value);
     }
 
+    private static final class OpaqueRenderRegion {
+        final int chunkX;
+        final int chunkY;
+        final int chunkZ;
+        int vaoId;
+        int vboId;
+        int vertexCount;
+        int version;
+        boolean buildInFlight;
+        long revealStartNanos;
+        final HashSet<Long> includedMeshKeys = new HashSet<>();
+
+        OpaqueRenderRegion(int chunkX, int chunkY, int chunkZ) {
+            this.chunkX = chunkX;
+            this.chunkY = chunkY;
+            this.chunkZ = chunkZ;
+        }
+    }
+
+    private static final class OpaqueRegionBuildSnapshot {
+        final long regionKey;
+        final int version;
+        final int epoch;
+        final int[][] vertices;
+        final int[] intCounts;
+        final int[] localChunkXs;
+        final int[] localChunkZs;
+        final long[] meshKeys;
+        final int entryCount;
+
+        OpaqueRegionBuildSnapshot(long regionKey, int version, int epoch, int[][] vertices, int[] intCounts,
+                                  int[] localChunkXs, int[] localChunkZs, long[] meshKeys, int entryCount) {
+            this.regionKey = regionKey;
+            this.version = version;
+            this.epoch = epoch;
+            this.vertices = vertices;
+            this.intCounts = intCounts;
+            this.localChunkXs = localChunkXs;
+            this.localChunkZs = localChunkZs;
+            this.meshKeys = meshKeys;
+            this.entryCount = entryCount;
+        }
+    }
+
+    private static final class OpaqueRegionBuildResult {
+        final long regionKey;
+        final int version;
+        final int epoch;
+        final int[] vertices;
+        final long[] includedMeshKeys;
+        final RuntimeException failure;
+
+        OpaqueRegionBuildResult(long regionKey, int version, int epoch, int[] vertices, long[] includedMeshKeys) {
+            this(regionKey, version, epoch, vertices, includedMeshKeys, null);
+        }
+
+        private OpaqueRegionBuildResult(long regionKey, int version, int epoch, int[] vertices,
+                                        long[] includedMeshKeys, RuntimeException failure) {
+            this.regionKey = regionKey;
+            this.version = version;
+            this.epoch = epoch;
+            this.vertices = vertices;
+            this.includedMeshKeys = includedMeshKeys;
+            this.failure = failure;
+        }
+
+        static OpaqueRegionBuildResult failed(OpaqueRegionBuildSnapshot snapshot, RuntimeException failure) {
+            return new OpaqueRegionBuildResult(
+                snapshot.regionKey,
+                snapshot.version,
+                snapshot.epoch,
+                new int[0],
+                new long[0],
+                failure
+            );
+        }
+    }
+
+    static final class MeshBuildRadiusController {
+        private final int initialRadius;
+        private int currentRadius;
+
+        MeshBuildRadiusController(int initialRadius) {
+            this.initialRadius = Math.max(1, initialRadius);
+        }
+
+        int current(int targetRadius) {
+            int safeTargetRadius = Math.max(1, targetRadius);
+            if (currentRadius <= 0 || currentRadius > safeTargetRadius) {
+                currentRadius = Math.min(initialRadius, safeTargetRadius);
+            }
+            return currentRadius;
+        }
+
+        int update(int targetRadius, boolean currentRadiusReady) {
+            int safeTargetRadius = Math.max(1, targetRadius);
+            current(safeTargetRadius);
+            if (currentRadiusReady && currentRadius < safeTargetRadius) {
+                currentRadius++;
+            }
+            return currentRadius;
+        }
+
+        int value() {
+            return currentRadius;
+        }
+
+        void reset() {
+            currentRadius = 0;
+        }
+    }
+
+    static final class MeshBuildRevisionTracker {
+        private final ConcurrentHashMap<Long, Integer> revisions = new ConcurrentHashMap<>();
+
+        int current(long meshKey) {
+            Integer revision = revisions.get(meshKey);
+            return revision == null ? 0 : revision.intValue();
+        }
+
+        int invalidate(long meshKey) {
+            return revisions.compute(meshKey, (key, revision) -> {
+                if (revision == null || revision.intValue() == Integer.MAX_VALUE) {
+                    return Integer.valueOf(1);
+                }
+                return Integer.valueOf(revision.intValue() + 1);
+            }).intValue();
+        }
+
+        boolean isCurrent(long meshKey, int buildRevision) {
+            return current(meshKey) == buildRevision;
+        }
+
+        void forget(long meshKey) {
+            revisions.remove(meshKey);
+        }
+
+        void forgetIf(java.util.function.LongPredicate predicate) {
+            for (Long meshKey : revisions.keySet()) {
+                if (predicate.test(meshKey.longValue())) {
+                    revisions.remove(meshKey);
+                }
+            }
+        }
+
+        void clear() {
+            revisions.clear();
+        }
+    }
+
     private static final class MeshBuildCandidate implements Comparable<MeshBuildCandidate> {
         final int chunkX;
         final int chunkY;
         final int chunkZ;
         final long meshKey;
-        final boolean visible;
         final double distanceSquared;
         final boolean immediate;
 
-        MeshBuildCandidate(int chunkX, int chunkY, int chunkZ, long meshKey, boolean visible, double distanceSquared, boolean immediate) {
+        MeshBuildCandidate(int chunkX, int chunkY, int chunkZ, long meshKey, double distanceSquared, boolean immediate) {
             this.chunkX = chunkX;
             this.chunkY = chunkY;
             this.chunkZ = chunkZ;
             this.meshKey = meshKey;
-            this.visible = visible;
             this.distanceSquared = distanceSquared;
             this.immediate = immediate;
         }
@@ -6134,9 +7385,6 @@ final class OpenGlRenderer {
         public int compareTo(MeshBuildCandidate other) {
             if (immediate != other.immediate) {
                 return immediate ? -1 : 1;
-            }
-            if (visible != other.visible) {
-                return visible ? -1 : 1;
             }
             int distanceCompare = Double.compare(distanceSquared, other.distanceSquared);
             if (distanceCompare != 0) {
@@ -6169,12 +7417,27 @@ final class OpenGlRenderer {
         }
     }
 
+    private static final class GpuMeshBuffer {
+        static final GpuMeshBuffer EMPTY = new GpuMeshBuffer(0, 0, 0);
+
+        final int vaoId;
+        final int vboId;
+        final int vertexCount;
+
+        GpuMeshBuffer(int vaoId, int vboId, int vertexCount) {
+            this.vaoId = vaoId;
+            this.vboId = vboId;
+            this.vertexCount = vertexCount;
+        }
+    }
+
     private static final class MeshBuildResult {
         final int chunkX;
         final int chunkY;
         final int chunkZ;
         final long meshKey;
         final int version;
+        final int buildRevision;
         final int[] opaqueVertices;
         final int opaqueIntCount;
         final int[] transparentVertices;
@@ -6183,7 +7446,7 @@ final class OpenGlRenderer {
         final boolean readyForUpload;
         final int epoch;
 
-        MeshBuildResult(int chunkX, int chunkY, int chunkZ, long meshKey, int version,
+        MeshBuildResult(int chunkX, int chunkY, int chunkZ, long meshKey, int version, int buildRevision,
                         int[] opaqueVertices, int opaqueIntCount,
                         int[] transparentVertices, int transparentIntCount,
                         boolean readyForUpload, int epoch) {
@@ -6192,6 +7455,7 @@ final class OpenGlRenderer {
             this.chunkZ = chunkZ;
             this.meshKey = meshKey;
             this.version = version;
+            this.buildRevision = buildRevision;
             this.opaqueVertices = opaqueVertices;
             this.opaqueIntCount = opaqueIntCount;
             this.transparentVertices = transparentVertices;
@@ -6201,8 +7465,8 @@ final class OpenGlRenderer {
             this.epoch = epoch;
         }
 
-        static MeshBuildResult empty(int chunkX, int chunkY, int chunkZ, long meshKey, int version, boolean readyForUpload, int epoch) {
-            return new MeshBuildResult(chunkX, chunkY, chunkZ, meshKey, version, new int[0], 0, new int[0], 0, readyForUpload, epoch);
+        static MeshBuildResult empty(int chunkX, int chunkY, int chunkZ, long meshKey, int version, int buildRevision, boolean readyForUpload, int epoch) {
+            return new MeshBuildResult(chunkX, chunkY, chunkZ, meshKey, version, buildRevision, new int[0], 0, new int[0], 0, readyForUpload, epoch);
         }
     }
 
@@ -6300,13 +7564,13 @@ final class OpenGlRenderer {
         }
     }
 
-    private static final class IntVertexBuilder {
+    static final class IntVertexBuilder {
         private int[] values;
         private int[] sortScratch;
         private long[] sortOrder;
         private int size;
 
-        private IntVertexBuilder(int initialCapacity) {
+        IntVertexBuilder(int initialCapacity) {
             values = new int[Math.max(INTS_PER_VERTEX * 4, initialCapacity)];
         }
 

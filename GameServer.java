@@ -49,7 +49,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             tickThread = new Thread(this::runTickLoop, "TinyCraft dedicated tick");
             tickThread.setDaemon(false);
             tickThread.start();
-            System.out.println("TinyCraft v0.2 Final dedicated server");
+            System.out.println("TinyCraft v0.2.1 dedicated server");
             System.out.println("World: " + resolved.directory);
             System.out.println("Seed: " + Long.toUnsignedString(resolved.seed, 16));
             System.out.println("MOTD: " + properties.motd);
@@ -98,6 +98,11 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
     }
 
     void handleConsoleCommand(String raw) {
+        MultiplayerManager currentMultiplayer = multiplayer;
+        if (currentMultiplayer != null && running && Thread.currentThread() != tickThread) {
+            currentMultiplayer.queueServerAction(() -> handleConsoleCommand(raw));
+            return;
+        }
         String result = executeServerCommand(null, "Console", raw, true);
         if (result == null) {
             System.out.println("Unknown command. Type 'help'.");
@@ -147,12 +152,13 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             return null;
         }
         if (senderUuid != null && !accessList.isOperator(senderUuid, senderName)
+            && !isPublicPlayerCommand(command)
             && (!properties.allowCheats || !isPlayerCheatCommand(command))) {
             return "You do not have permission to use /" + command + ".";
         }
         try {
             if ("help".equals(command)) {
-                return "Commands: help, status, list, say <message>, kick <player> [reason], save, save-all, stop, op, deop, whitelist, ban, pardon, tp, gamemode, give, clear";
+                return "Commands: help, status, list, ping, msg <player> <message>, say <message>, kick <player> [reason], save, save-all, stop, op, deop, whitelist, ban, pardon, tp, kill, summon, setblock, fill, gamemode, give, clear";
             }
             if ("status".equals(command)) {
                 long uptimeSeconds = Math.max(0L, (System.currentTimeMillis() - startMillis) / 1000L);
@@ -230,29 +236,116 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
                 return handleWhitelistCommand(parts);
             }
             if ("tp".equals(command)) {
-                boolean selfTarget = senderUuid != null && parts.length == 4;
-                if (parts.length < 4) {
+                String[] teleportParts = line.split("\\s+");
+                boolean selfTarget = senderUuid != null && teleportParts.length == 4;
+                boolean explicitTarget = teleportParts.length == 5;
+                if (!selfTarget && !explicitTarget) {
                     return senderUuid == null ? "Usage: tp <player> <x> <y> <z>" : "Usage: /tp <x> <y> <z>";
                 }
-                String targetName = selfTarget ? senderName : parts[1];
+                String targetName = selfTarget ? senderName : teleportParts[1];
+                if (!selfTarget && senderUuid != null && !accessList.isOperator(senderUuid, senderName)) {
+                    return "You do not have permission to teleport another player.";
+                }
                 int xIndex = selfTarget ? 1 : 2;
-                double x = Double.parseDouble(parts[xIndex]);
-                if (selfTarget) {
-                    double y = Double.parseDouble(parts[2]);
-                    double z = Double.parseDouble(parts[3]);
-                    return multiplayer.teleportPlayerByName(targetName, x, y, z)
-                        ? "Teleported " + targetName + "."
-                        : "Player not found: " + targetName;
-                }
-                String[] tail = parts[3].split("\\s+");
-                if (tail.length < 2) {
-                    return "Usage: tp <player> <x> <y> <z>";
-                }
-                double y = Double.parseDouble(tail[0]);
-                double z = Double.parseDouble(tail[1]);
+                double x = Double.parseDouble(teleportParts[xIndex]);
+                double y = Double.parseDouble(teleportParts[xIndex + 1]);
+                double z = Double.parseDouble(teleportParts[xIndex + 2]);
                 return multiplayer.teleportPlayerByName(targetName, x, y, z)
                     ? "Teleported " + targetName + "."
                     : "Player not found: " + targetName;
+            }
+            if ("kill".equals(command)) {
+                boolean selfTarget = senderUuid != null && parts.length == 1;
+                if (!selfTarget && parts.length != 2) {
+                    return senderUuid == null ? "Usage: kill <player>" : "Usage: /kill [player]";
+                }
+                String targetName = selfTarget ? senderName : parts[1];
+                if (senderUuid != null && !targetName.equalsIgnoreCase(senderName)
+                    && !accessList.isOperator(senderUuid, senderName)) {
+                    return "You do not have permission to kill another player.";
+                }
+                return multiplayer.killPlayerByName(targetName)
+                    ? "Killed " + targetName + "."
+                    : "Player not found: " + targetName;
+            }
+            if ("summon".equals(command)) {
+                if (parts.length < 2 || parts.length > 3) {
+                    return senderUuid == null ? "Usage: summon <entity> <player>" : "Usage: /summon <entity>";
+                }
+                MobKind kind = ChatSystem.resolveMobKind(parts[1]);
+                if (kind == null) {
+                    return "Unknown entity: " + parts[1];
+                }
+                boolean selfTarget = senderUuid != null && parts.length == 2;
+                if (!selfTarget && parts.length != 3) {
+                    return "Usage: summon <entity> <player>";
+                }
+                String targetName = selfTarget ? senderName : parts[2];
+                if (senderUuid != null && !targetName.equalsIgnoreCase(senderName)
+                    && !accessList.isOperator(senderUuid, senderName)) {
+                    return "You do not have permission to summon at another player.";
+                }
+                return multiplayer.summonMobAtPlayerByName(targetName, kind)
+                    ? "Summoned " + parts[1] + "."
+                    : "Player not found: " + targetName;
+            }
+            if ("setblock".equals(command)) {
+                String[] blockParts = line.split("\\s+");
+                if (blockParts.length != 5) {
+                    return console
+                        ? "Usage: setblock <x> <y> <z> <block>"
+                        : "Usage: /setblock <x> <y> <z> <block>";
+                }
+                BlockState state = ChatSystem.resolveCommandBlockState(blockParts[4]);
+                if (state == null) {
+                    return "Unknown block: " + blockParts[4];
+                }
+                int changed = multiplayer.setBlockByCommand(
+                    senderUuid == null ? null : senderName,
+                    Integer.parseInt(blockParts[1]),
+                    Integer.parseInt(blockParts[2]),
+                    Integer.parseInt(blockParts[3]),
+                    state
+                );
+                return commandBlockFeedback(changed, false);
+            }
+            if ("fill".equals(command)) {
+                String[] fillParts = line.split("\\s+");
+                if (fillParts.length != 8) {
+                    return console
+                        ? "Usage: fill <x1> <y1> <z1> <x2> <y2> <z2> <block>"
+                        : "Usage: /fill <x1> <y1> <z1> <x2> <y2> <z2> <block>";
+                }
+                BlockState state = ChatSystem.resolveCommandBlockState(fillParts[7]);
+                if (state == null) {
+                    return "Unknown block: " + fillParts[7];
+                }
+                int x1 = Integer.parseInt(fillParts[1]);
+                int y1 = Integer.parseInt(fillParts[2]);
+                int z1 = Integer.parseInt(fillParts[3]);
+                int x2 = Integer.parseInt(fillParts[4]);
+                int y2 = Integer.parseInt(fillParts[5]);
+                int z2 = Integer.parseInt(fillParts[6]);
+                int minX = Math.min(x1, x2);
+                int minY = Math.min(y1, y2);
+                int minZ = Math.min(z1, z2);
+                int maxX = Math.max(x1, x2);
+                int maxY = Math.max(y1, y2);
+                int maxZ = Math.max(z1, z2);
+                if (ChatSystem.fillBlockCount(minX, minY, minZ, maxX, maxY, maxZ) > ChatSystem.MAX_FILL_BLOCKS) {
+                    return "Too many blocks. Maximum: " + ChatSystem.MAX_FILL_BLOCKS + ".";
+                }
+                int changed = multiplayer.fillBlocksByCommand(
+                    senderUuid == null ? null : senderName,
+                    minX,
+                    minY,
+                    minZ,
+                    maxX,
+                    maxY,
+                    maxZ,
+                    state
+                );
+                return commandBlockFeedback(changed, true);
             }
             if ("gamemode".equals(command)) {
                 boolean selfTarget = senderUuid != null && parts.length == 2;
@@ -308,6 +401,19 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         }
     }
 
+    private String commandBlockFeedback(int changed, boolean fill) {
+        if (changed == -1) {
+            return "Coordinates are outside the world.";
+        }
+        if (changed < 0) {
+            return "World or player is not available.";
+        }
+        if (fill) {
+            return "Filled " + changed + " block(s).";
+        }
+        return changed == 0 ? "No blocks were changed." : "Changed the block.";
+    }
+
     private String handleWhitelistCommand(String[] parts) throws IOException {
         if (parts.length < 2) {
             return "Whitelist is " + (properties.whitelist ? "on" : "off") + ". Entries: " + accessList.describeWhitelist();
@@ -356,6 +462,10 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             || "ban".equals(command)
             || "pardon".equals(command)
             || "tp".equals(command)
+            || "kill".equals(command)
+            || "summon".equals(command)
+            || "setblock".equals(command)
+            || "fill".equals(command)
             || "gamemode".equals(command)
             || "give".equals(command)
             || "clear".equals(command);
@@ -363,9 +473,17 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
 
     private boolean isPlayerCheatCommand(String command) {
         return "tp".equals(command)
+            || "kill".equals(command)
+            || "summon".equals(command)
+            || "setblock".equals(command)
+            || "fill".equals(command)
             || "gamemode".equals(command)
             || "give".equals(command)
             || "clear".equals(command);
+    }
+
+    private boolean isPublicPlayerCommand(String command) {
+        return "help".equals(command) || "list".equals(command);
     }
 
     private Byte resolveGiveItem(String raw) {
@@ -497,7 +615,11 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         if (world == null || multiplayer == null) {
             return;
         }
-        PlayerState activePlayer = multiplayer == null ? null : multiplayer.firstConnectedPlayer();
+        multiplayer.drainEvents();
+        if (!running || world == null || multiplayer == null) {
+            return;
+        }
+        PlayerState activePlayer = multiplayer.firstConnectedPlayer();
         PlayerState serverPlayer = activePlayer == null ? simulationPlayer : activePlayer;
         world.setRenderDistanceChunks(properties.viewDistance);
         world.advanceWorldTime(delta);
@@ -505,12 +627,10 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         world.updateDroppedItems(serverPlayer, null, delta);
         world.updateMobs(serverPlayer, delta);
         ColumnUpdateList dirtyFromTicks = world.updateWorldTicks(serverPlayer, delta);
-        if (multiplayer != null) {
-            multiplayer.drainEvents();
-            multiplayer.tickDedicated(world, delta);
-            multiplayer.broadcastBlockUpdates(world, dirtyFromTicks);
-            multiplayer.broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
-        }
+        multiplayer.broadcastBlockUpdates(world, dirtyFromTicks);
+        multiplayer.broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
+        multiplayer.tickDedicated(world, serverPlayer, delta);
+        multiplayer.broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
         autosaveTimer += delta;
         if (autosaveTimer >= AUTOSAVE_SECONDS) {
             autosaveTimer = 0.0;
@@ -540,7 +660,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         TerrainPreset terrainPreset = properties.terrainPreset();
         Long explicitSeed = properties.explicitSeed();
         long seed = explicitSeed == null ? properties.randomSeed() : explicitSeed.longValue();
-        writeWorldMetadata(directory, seed, 0, 2, terrainPreset);
+        writeWorldMetadata(directory, seed, 0, properties.allowCheats, 2, terrainPreset);
         return new ResolvedWorld(directory, seed, terrainPreset);
     }
 
@@ -577,7 +697,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
         return new WorldMetadata(seed, terrainPreset);
     }
 
-    private void writeWorldMetadata(Path directory, long seed, int gameMode, int difficulty, TerrainPreset terrainPreset) throws IOException {
+    private void writeWorldMetadata(Path directory, long seed, int gameMode, boolean allowCheats, int difficulty, TerrainPreset terrainPreset) throws IOException {
         Files.createDirectories(directory);
         Files.createDirectories(directory.resolve(GameConfig.SAVE_REGION_DIRECTORY));
         TerrainPreset storedPreset = terrainPreset == null ? TerrainPreset.DEFAULT : terrainPreset;
@@ -586,6 +706,7 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             + System.lineSeparator() + "  \"version\": 1,"
             + System.lineSeparator() + "  \"seed\": \"" + jsonEscape(seedHex) + "\","
             + System.lineSeparator() + "  \"gameMode\": " + gameMode + ","
+            + System.lineSeparator() + "  \"allowCheats\": " + allowCheats + ","
             + System.lineSeparator() + "  \"difficulty\": " + difficulty + ","
             + System.lineSeparator() + "  \"worldType\": \"" + jsonEscape(storedPreset.metadataId()) + "\","
             + System.lineSeparator() + "  \"minY\": " + GameConfig.WORLD_MIN_Y + ","
@@ -594,14 +715,15 @@ final class GameServer implements MultiplayerManager.Listener, MultiplayerManage
             + System.lineSeparator() + "  \"createdWith\": \"TinyCraft server mcrx-1\""
             + System.lineSeparator() + "}"
             + System.lineSeparator();
-        Files.write(directory.resolve(GameConfig.SAVE_LEVEL_FILE), levelJson.getBytes(StandardCharsets.UTF_8));
+        AtomicFiles.writeUtf8(directory.resolve(GameConfig.SAVE_LEVEL_FILE), levelJson);
 
         String metadata = seedHex
             + System.lineSeparator() + "mode=" + gameMode
+            + System.lineSeparator() + "allowCheats=" + allowCheats
             + System.lineSeparator() + "difficulty=" + difficulty
             + System.lineSeparator() + "worldType=" + storedPreset.metadataId()
             + System.lineSeparator();
-        Files.write(directory.resolve(GameConfig.SAVE_METADATA_FILE), metadata.getBytes(StandardCharsets.UTF_8));
+        AtomicFiles.writeUtf8(directory.resolve(GameConfig.SAVE_METADATA_FILE), metadata);
     }
 
     private String readUtf8(Path path) throws IOException {

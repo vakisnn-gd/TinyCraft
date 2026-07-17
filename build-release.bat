@@ -2,10 +2,31 @@
 setlocal
 cd /d "%~dp0"
 
-set "NAME=TinyCraft-v0.2-final-windows"
+set "NAME=TinyCraft-v0.2.1-windows"
 set "RELEASE_DIR=release"
 set "DEST=%RELEASE_DIR%\%NAME%"
 set "ZIP=%RELEASE_DIR%\%NAME%.zip"
+set "JLINK_EXE="
+
+if defined JAVA_HOME if exist "%JAVA_HOME%\bin\jlink.exe" set "JLINK_EXE=%JAVA_HOME%\bin\jlink.exe"
+for /d %%D in ("%LOCALAPPDATA%\Programs\Eclipse Adoptium\jdk-21*") do if exist "%%~fD\bin\jlink.exe" set "JLINK_EXE=%%~fD\bin\jlink.exe"
+for /d %%D in ("%ProgramFiles%\Eclipse Adoptium\jdk-21*") do if exist "%%~fD\bin\jlink.exe" set "JLINK_EXE=%%~fD\bin\jlink.exe"
+for /d %%D in ("%ProgramFiles%\Java\jdk-21*") do if exist "%%~fD\bin\jlink.exe" set "JLINK_EXE=%%~fD\bin\jlink.exe"
+for /d %%D in ("%ProgramFiles%\Microsoft\jdk-21*") do if exist "%%~fD\bin\jlink.exe" set "JLINK_EXE=%%~fD\bin\jlink.exe"
+if not defined JLINK_EXE for %%J in (jlink.exe) do if not "%%~$PATH:J"=="" set "JLINK_EXE=%%~$PATH:J"
+
+if not defined JLINK_EXE (
+    echo JDK 21 with jlink was not found.
+    echo Install JDK 21 or set JAVA_HOME to its folder.
+    exit /b 1
+)
+
+for /f "tokens=1 delims=." %%V in ('"%JLINK_EXE%" --version') do set "JLINK_MAJOR=%%V"
+if not "%JLINK_MAJOR%"=="21" (
+    echo TinyCraft release requires JDK 21, but jlink %JLINK_MAJOR% was found.
+    echo Set JAVA_HOME to a JDK 21 folder and try again.
+    exit /b 1
+)
 
 echo Running tests...
 call run-tests.bat
@@ -14,7 +35,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Building TinyCraft v0.2 final...
+echo Building TinyCraft v0.2.1...
 if exist out (
     rmdir /s /q out
     if errorlevel 1 (
@@ -63,6 +84,13 @@ mkdir "%DEST%\out"
 if errorlevel 1 goto :copy_failed
 mkdir "%DEST%\lib"
 if errorlevel 1 goto :copy_failed
+
+echo Building bundled Java 21 runtime...
+"%JLINK_EXE%" --add-modules java.base,java.desktop,jdk.unsupported --strip-debug --no-header-files --no-man-pages --compress=zip-6 --output "%DEST%\runtime"
+if errorlevel 1 (
+    echo Failed to build bundled Java runtime.
+    exit /b 1
+)
 
 xcopy /E /I /Y out "%DEST%\out" >nul
 if errorlevel 1 goto :copy_failed

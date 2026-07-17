@@ -4,7 +4,7 @@
 
 ## Как устроен проект
 
-TinyCraft пока остается простым Java-проектом без Maven/Gradle: исходники игры лежат в корне, а сборка идет командами `javac *.java` и `.bat`-скриптами. Лаунчер вынесен в `TinyCraftLauncher/`.
+TinyCraft пока остается простым Java-проектом без Maven/Gradle: исходники игры лежат в корне, а сборка идет командами `javac *.java` и `.bat`-скриптами. Лаунчер развивается в отдельном репозитории `TinyCraftLauncher`.
 
 - Игра: клиент, renderer, мир, инвентарь, gameplay.
 - Сервер: dedicated server, настройки, консольные команды.
@@ -23,6 +23,8 @@ TinyCraft пока остается простым Java-проектом без 
 - `OpenGlRenderer.java`, `UiRenderer.java`, `SkyRenderer.java`, `WaterRenderer.java` - отрисовка мира, UI, неба и воды.
 - `AudioEngine.java` - звуки.
 - `ChatSystem.java` - чат, ввод, команды на стороне клиента.
+- `InputController.java`, `PlayerController.java` - состояние ввода, движение, урон, смерть, голод и регенерация игрока.
+- `DebugInfo.java` - сбор и кэширование данных для масштабируемого меню `F3`.
 
 ## Сервер и multiplayer
 
@@ -35,7 +37,7 @@ TinyCraft пока остается простым Java-проектом без 
 - `NetworkConnection.java` - сетевое соединение.
 - `LanClientTransport.java`, `LanServerTransport.java` - LAN/integrated transport.
 - `GameClientSession.java`, `PlayerListEntry.java` - состояние клиента и списка игроков.
-- `TinyCraftLauncher/` - отдельная папка лаунчера со своим `Launcher.java`, сборкой и ресурсами.
+- `TinyCraftLauncher` - отдельный репозиторий лаунчера со своей сборкой и ресурсами.
 
 ## Как читать поток игры
 
@@ -55,6 +57,9 @@ TinyCraft пока остается простым Java-проектом без 
 - Не работает creative inventory: `TinyCraft.onClientServerPlayerState`, `InventorySystem.handleClick`, server `CONTAINER_CLICK`.
 - Команды: local chat в `ChatSystem`, dedicated console/client commands в `GameServer`, LAN fallback в `MultiplayerManager`.
 - Предметы исчезают или дюпаются: `PlayerInventory.handleClick`, `sendInventorySync`, container handlers в `MultiplayerManager`.
+- Голод, регенерация или смерть: `PlayerController`, поля player state в `GameData.java`, сохранение/восстановление в `TinyCraft.java`.
+- `F2`, `F3` или панорама: обработка клавиш в `TinyCraft.java`, захват и UI в `OpenGlRenderer.java`, данные overlay в `DebugInfo.java`.
+
 ## Сборка и временные файлы
 
 - `out/` - результат `javac`.
@@ -68,9 +73,9 @@ TinyCraft пока остается простым Java-проектом без 
 
 ## Важные правила текущей базы
 
-- Текущая стабильная база: `v0.2 Final`.
+- Текущая база и ближайший релиз: `v0.2.1`.
 - Следующий ориентир разработки: `v0.3`.
-- Protocol version в v0.2 Final: `MultiplayerProtocol.VERSION = 7`.
+- Protocol version в v0.2.1: `MultiplayerProtocol.VERSION = 7`.
 - Dedicated server authoritative for player mode/health, inventory, containers, block place/break.
 - User-facing namespace is `tinycraft:name`; internal block registry still uses legacy names until the registry is renamed.
 - Windows-first release: current bundled LWJGL natives are Windows-only.

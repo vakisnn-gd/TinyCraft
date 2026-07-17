@@ -2372,17 +2372,8 @@ final class WorldGenerator {
                     continue;
                 }
 
-                int beachSurfaceY = Math.max(surfaceY, GameConfig.SEA_LEVEL);
-                if (surfaceY < beachSurfaceY) {
-                    for (int y = surfaceY + 1; y <= beachSurfaceY; y++) {
-                        byte block = column.getBlock(worldX, y, worldZ);
-                        if (block == GameConfig.AIR || GameConfig.isLiquidBlock(block) || isPlant(block)) {
-                            column.setBlock(worldX, y, worldZ, GameConfig.SAND);
-                        }
-                    }
-                }
-                int bottomY = Math.max(GameConfig.WORLD_MIN_Y, beachSurfaceY - OCEAN_SAND_DEPTH);
-                for (int y = beachSurfaceY; y >= bottomY; y--) {
+                int bottomY = Math.max(GameConfig.WORLD_MIN_Y, surfaceY - OCEAN_SAND_DEPTH);
+                for (int y = surfaceY; y >= bottomY; y--) {
                     byte block = column.getBlock(worldX, y, worldZ);
                     if (isNaturalSurfaceBlock(block)) {
                         column.setBlock(worldX, y, worldZ, GameConfig.SAND);
@@ -2645,7 +2636,7 @@ final class WorldGenerator {
     }
 
     private int waterLevelForTerrain(int surfaceHeight, byte terrainFlags) {
-        if ((terrainFlags & TERRAIN_OCEAN) != 0) {
+        if ((terrainFlags & (TERRAIN_OCEAN | TERRAIN_BEACH)) != 0) {
             return GameConfig.SEA_LEVEL;
         }
         if ((terrainFlags & TERRAIN_LAKE) != 0) {
@@ -2661,7 +2652,7 @@ final class WorldGenerator {
         if (surfaceHeight >= waterLevel) {
             return false;
         }
-        return (terrainFlags & TERRAIN_LAKE) != 0;
+        return (terrainFlags & (TERRAIN_BEACH | TERRAIN_LAKE)) != 0;
     }
 
     private byte sampleTerrainFlags(int worldX, int worldZ, double continentalness, double lakeBasin, int surfaceHeight) {
@@ -2677,11 +2668,15 @@ final class WorldGenerator {
             return TERRAIN_OCEAN;
         }
 
-        boolean shorelineHeight = surfaceHeight >= GameConfig.SEA_LEVEL - 2
-            && surfaceHeight <= GameConfig.SEA_LEVEL + BEACH_MAX_HEIGHT_ABOVE_SEA;
         boolean oceanCoastline = continentalness >= terrain.oceanCoastline
             && continentalness <= terrain.oceanCoastline + terrain.coastlineWidth
             && lakeBasin >= terrain.lakeBankWidth;
+        if (oceanCoastline && surfaceHeight < GameConfig.SEA_LEVEL - 2) {
+            return TERRAIN_OCEAN;
+        }
+
+        boolean shorelineHeight = surfaceHeight >= GameConfig.SEA_LEVEL - 2
+            && surfaceHeight <= GameConfig.SEA_LEVEL + BEACH_MAX_HEIGHT_ABOVE_SEA;
         if (shorelineHeight && oceanCoastline) {
             return TERRAIN_BEACH;
         }

@@ -6,9 +6,7 @@ TinyCraft - маленькая Java/LWJGL voxel-песочница. В прое�
 
 ## Какая версия сейчас актуальная?
 
-Актуальная и последняя версия проекта - `v0.2 Final`.
-
-Это финальный релиз TinyCraft. Разработка завершена; дальше проект лучше воспринимать как архив учебного/экспериментального Minecraft-like проекта, а не как активно поддерживаемую игру.
+Актуальная версия исходников и ближайший релиз - `v0.2.1`. После его публикации следующим крупным ориентиром будет `v0.3`.
 
 ## Где скачать игру?
 
@@ -16,11 +14,11 @@ TinyCraft - маленькая Java/LWJGL voxel-песочница. В прое�
 
 [https://github.com/vakisnn-gd/TinyCraft/releases](https://github.com/vakisnn-gd/TinyCraft/releases)
 
-Используйте финальный релиз:
+Для новой публикации используются:
 
-- `TinyCraft v0.2 Final`
-- tag: `v0.2`
-- asset: `TinyCraft-v0.2-final-windows.zip`
+- релиз: `TinyCraft v0.2.1`
+- tag: `v0.2.1`
+- asset: `TinyCraft-v0.2.1-windows.zip`
 
 Скачивайте именно `.zip` из assets. `Source code` - это архив исходников от GitHub, он больше подходит для разработки.
 
@@ -47,6 +45,12 @@ java -cp "out;lib/*" TinyCraft
 .\run-game.bat
 ```
 
+## Как сделать скриншот или панораму?
+
+- `F2` сохраняет обычный PNG-скриншот в `screenshots/`.
+- `F6` автоматически снимает шесть сторон панорамы и складывает их в отдельную папку `screenshots/panorama-.../`.
+- Чтобы новая панорама появилась в меню, скопируйте полученные `panorama_0.png` - `panorama_5.png` в `assets/menu_panorama/` и перезапустите игру.
+
 ## Как запустить dedicated server?
 
 ```powershell
@@ -64,7 +68,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 ## Поддерживается ли мультиплеер?
 
-Да. `v0.2 Final` поддерживает Direct IP / LAN, dedicated server и server-authority проход для инвентаря/контейнеров.
+Да. `v0.2.1` поддерживает Direct IP / LAN, dedicated server и server-authority проход для инвентаря/контейнеров.
 
 Работает:
 
@@ -123,7 +127,7 @@ java -cp "out;lib/*" TinyCraftServer --world server_world --port 25566
 
 ## Почему релиз только Windows?
 
-В репозитории сейчас лежат LWJGL natives только для Windows. Финальный релиз целится в Windows zip; Linux/macOS packaging в проекте не завершался.
+В репозитории сейчас лежат LWJGL natives только для Windows. Релиз `v0.2.1` собирается как Windows ZIP; Linux/macOS packaging в проекте пока не завершён.
 
 ## Можно ли менять код?
 

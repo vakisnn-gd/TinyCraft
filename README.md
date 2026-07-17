@@ -2,9 +2,9 @@
 
 TinyCraft - небольшая Java/LWJGL voxel-песочница в духе Minecraft. В проекте есть singleplayer, чанковый мир, биомы, пещеры, деревни, мобы, инвентарь, крафт, сундуки, печки, жидкости, чат, LAN/Direct IP multiplayer и dedicated server.
 
-Текущая стабильная база: `v0.2 Final`. Проект продолжается: следующий ориентир - `TinyCraft v0.3`, где основной фокус на более живом gameplay и понятном multiplayer через VPS.
+Текущая версия исходников и ближайший релиз: `v0.2.1`. Следующий ориентир после публикации - `TinyCraft v0.3`, где основной фокус будет на более живом gameplay и понятном multiplayer через VPS.
 
-Лаунчер вынесен в отдельную папку `TinyCraftLauncher/`, чтобы его можно было разрабатывать отдельно, не смешивая с игрой.
+Лаунчер развивается отдельно: [TinyCraftLauncher](https://github.com/vakisnn-gd/TinyCraftLauncher). Его код и релизы не входят в этот репозиторий игры.
 
 ## Скриншоты
 
@@ -34,6 +34,14 @@ java -cp "out;lib/*" TinyCraft
 ```powershell
 .\run-game.bat
 ```
+
+Основные служебные клавиши:
+
+- `F2` - сохранить PNG-скриншот в `screenshots/`;
+- `F3` - показать или скрыть отладочную информацию;
+- `F3 + G` - показать границы чанков;
+- `F5` - сменить вид камеры;
+- `F6` - автоматически сохранить шесть сторон панорамы в `screenshots/panorama-.../`.
 
 ## Dedicated Server
 
@@ -69,7 +77,7 @@ world=server_world
 seed=
 terrain=default
 maxPlayers=8
-motd=TinyCraft v0.2 Final Server
+motd=TinyCraft v0.2.1 Server
 allowPvp=true
 allowCheats=false
 viewDistance=8
@@ -83,8 +91,19 @@ viewDistance=8
 .\build-release.bat
 ```
 
-Результат появится в `release/TinyCraft-v0.2-final-windows/` и `release/TinyCraft-v0.2-final-windows.zip`.
-Лаунчер собирается отдельно из `TinyCraftLauncher/`.
+Результат появится в `release/TinyCraft-v0.2.1-windows/` и `release/TinyCraft-v0.2.1-windows.zip`.
+Лаунчер собирается отдельно в репозитории [TinyCraftLauncher](https://github.com/vakisnn-gd/TinyCraftLauncher).
+
+## Перед публикацией
+
+1. Собрать исходники и получить `OK` во всех тестах.
+2. В новом мире проверить берег/океан, survival, смерть, голод и регенерацию.
+3. Проверить `F2`, `F3`, `F3 + G`, `F6` и панораму главного меню.
+4. Запустить dedicated server и два клиента через `127.0.0.1:25566`.
+5. Проверить блоки, инвентарь, контейнеры, команды, `save`, `stop` и повторный вход.
+6. Собрать ZIP и запустить его из чистой папки без исходников и старых сохранений.
+
+Подробные сценарии и ожидаемый результат: `docs/QA_CHECKLIST_RU.md`.
 
 ## Тесты
 
@@ -118,18 +137,19 @@ Headless-тесты протокола и server-side логики:
 - `ROADMAP.md` - ближайший план развития игры и сервера.
 - `docs/CODE_OVERVIEW_RU.md` - карта кода: с какого файла начинать и где искать частые баги.
 - `docs/QA_CHECKLIST_RU.md` - ручной чеклист проверки.
+- `docs/RELEASE_0.2.1_DRAFT_RU.md` - готовый черновик текста релиза `v0.2.1`.
 - `docs/SERVER_HOSTING_RU.md` - как поднять сервер на VPS.
-- `TinyCraftLauncher/` - отдельная папка лаунчера с собственным запуском и сборкой.
+- [TinyCraftLauncher](https://github.com/vakisnn-gd/TinyCraftLauncher) - отдельный репозиторий лаунчера с собственным запуском и сборкой.
 - `FAQ.md` и `KNOWN_ISSUES.md` - вопросы, ограничения и известные проблемы.
 
-## Возможности v0.2 Final
+## Возможности v0.2.1
 
 - Singleplayer survival/creative/spectator.
 - Чанковый voxel-мир с биомами, горами, пляжами, океанами, реками, пещерами, рудами и шахтами.
 - Деревни, дома, фермы, дороги, жители и простые структуры.
 - Инвентарь, хотбар, крафт, сундуки, печки и верстак.
-- Мобы, дроп, яйца спавна, здоровье, голод, бой и базовый PvP.
-- Чат с русским вводом, команды и debug overlay.
+- Мобы, дроп, яйца спавна, здоровье, голод, естественная регенерация, бой и базовый PvP.
+- Чат с русским вводом, команды, масштабируемое меню `F3`, PNG-скриншоты и автоматическая съёмка панорамы.
 - LAN/Direct IP подключение к integrated host или dedicated server.
 - Server-side синхронизация блоков, чанков, игроков, мобов, здоровья, дропа, инвентаря и containers.
 - Таблица игроков по Tab с ping, здоровьем и статусом.

@@ -1,21 +1,29 @@
 #version 330 core
 
-layout(location = 0) in uvec2 aPackedVertex;
+layout(location = 0) in uvec3 aPackedVertex;
 
 uniform mat4 uViewProjection;
 uniform vec3 uChunkOrigin;
 uniform vec3 uCameraPosition;
 uniform float uTime;
 uniform int u_FancyGraphics;
+uniform int uRegionMesh;
 
 out vec4 vColor;
 out float v_AO;
 out float vFogDistance;
 
-vec3 unpackPosition(uint packed) {
+vec3 unpackChunkPosition(uint packed) {
     uint xi = packed & 1023u;
     uint yi = (packed >> 10) & 1023u;
     uint zi = (packed >> 20) & 1023u;
+    return vec3(xi, yi, zi) * (1.0 / 32.0) - vec3(0.25);
+}
+
+vec3 unpackRegionPosition(uint low, uint high) {
+    uint xi = low & 8191u;
+    uint yi = (low >> 13) & 1023u;
+    uint zi = ((low >> 23) & 511u) | ((high & 15u) << 9);
     return vec3(xi, yi, zi) * (1.0 / 32.0) - vec3(0.25);
 }
 
@@ -34,10 +42,20 @@ vec4 unpackColor(uint packed) {
 
 void main() {
     uint positionAndFlags = aPackedVertex.x;
-    vec3 localPosition = unpackPosition(positionAndFlags);
-    vColor = unpackColor(aPackedVertex.y);
-    v_AO = float((positionAndFlags >> 30) & 3u);
-    uint alphaByte = aPackedVertex.y & 255u;
+    uint colorPacked;
+    vec3 localPosition;
+    if (uRegionMesh != 0) {
+        localPosition = unpackRegionPosition(aPackedVertex.x, aPackedVertex.y);
+        colorPacked = aPackedVertex.z;
+        vColor = unpackColor(colorPacked);
+        v_AO = float((aPackedVertex.y >> 4) & 3u);
+    } else {
+        localPosition = unpackChunkPosition(positionAndFlags);
+        colorPacked = aPackedVertex.y;
+        vColor = unpackColor(colorPacked);
+        v_AO = float((positionAndFlags >> 30) & 3u);
+    }
+    uint alphaByte = colorPacked & 255u;
     bool foliageVertex = alphaByte == 252u || alphaByte == 253u || alphaByte == 248u || alphaByte == 249u;
     bool upperVertex = alphaByte == 253u || alphaByte == 249u;
     vec3 worldPosition = uCameraPosition + uChunkOrigin + localPosition;

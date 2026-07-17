@@ -61,6 +61,7 @@ final class MultiplayerManager {
     private static final int ATTACK_RATE = 20;
     private static final int CHAT_COMMAND_RATE = 8;
     private static final int CONTAINER_CLICK_RATE = 30;
+    private static final double BREAK_COMPLETION_TOLERANCE_MS = 125.0;
 
     private final LocalProfile profile;
     private final Listener listener;
@@ -83,6 +84,7 @@ final class MultiplayerManager {
     private ServerCommandDelegate serverCommandDelegate;
     private int maxPlayers = 8;
     private boolean allowPvp = true;
+    private boolean allowCheats;
     private int dedicatedChunkLogBudget = 8;
     private int dedicatedBlockActionLogBudget = 12;
     private String status = "Offline";
@@ -131,7 +133,13 @@ final class MultiplayerManager {
         }
     }
 
-    boolean startHost(final VoxelWorld world, final PlayerState hostPlayer, int port) {
+    void queueServerAction(Runnable action) {
+        if (action != null) {
+            mainThreadEvents.add(action);
+        }
+    }
+
+    boolean startHost(final VoxelWorld world, final PlayerState hostPlayer, int port, boolean allowCheats) {
         stop();
         try {
             serverSocket = new ServerSocket();
@@ -144,6 +152,7 @@ final class MultiplayerManager {
         activeHostPlayer = hostPlayer;
         maxPlayers = 8;
         allowPvp = true;
+        this.allowCheats = allowCheats;
         playerListSnapshot.clear();
         hostRunning = true;
         setStatus("Hosting on port " + port);
@@ -166,6 +175,7 @@ final class MultiplayerManager {
         activeHostPlayer = null;
         this.maxPlayers = Math.max(1, maxPlayers);
         this.allowPvp = allowPvp;
+        this.allowCheats = false;
         dedicatedChunkLogBudget = 8;
         playerListSnapshot.clear();
         hostRunning = true;
@@ -201,6 +211,7 @@ final class MultiplayerManager {
             || !serverClients.isEmpty();
         hostRunning = false;
         clientRunning = false;
+        allowCheats = false;
         closeQuietly(clientConnection);
         clientConnection = null;
         for (ServerClient client : serverClients.values()) {
@@ -234,6 +245,7 @@ final class MultiplayerManager {
         activeHostPlayer = hostPlayer;
         processHostRequests(world);
         processParadisePortalTravel(world, deltaTime);
+        simulateAdditionalDimensions(world, hostPlayer, deltaTime);
         processRemoteClientItemPickups(world);
         hostBroadcastTimer += deltaTime;
         entitySnapshotTimer += deltaTime;
@@ -250,8 +262,7 @@ final class MultiplayerManager {
         sendOpenFurnaceUpdates(world, deltaTime);
         if (entitySnapshotTimer >= ENTITY_SNAPSHOT_INTERVAL) {
             entitySnapshotTimer = 0.0;
-            broadcastMobSnapshot(world);
-            broadcastDroppedItemSnapshot(world);
+            broadcastEntitySnapshotsByDimension(world);
         }
         if (pingTimer >= PING_INTERVAL) {
             pingTimer = 0.0;
@@ -263,13 +274,14 @@ final class MultiplayerManager {
         }
     }
 
-    void tickDedicated(VoxelWorld world, double deltaTime) {
+    void tickDedicated(VoxelWorld world, PlayerState primaryPlayer, double deltaTime) {
         if (!hostRunning) {
             return;
         }
         activeWorld = world;
         processHostRequests(world);
         processParadisePortalTravel(world, deltaTime);
+        simulateAdditionalDimensions(world, primaryPlayer, deltaTime);
         processRemoteClientItemPickups(world);
         hostBroadcastTimer += deltaTime;
         entitySnapshotTimer += deltaTime;
@@ -285,8 +297,7 @@ final class MultiplayerManager {
         sendOpenFurnaceUpdates(world, deltaTime);
         if (entitySnapshotTimer >= ENTITY_SNAPSHOT_INTERVAL) {
             entitySnapshotTimer = 0.0;
-            broadcastMobSnapshot(world);
-            broadcastDroppedItemSnapshot(world);
+            broadcastEntitySnapshotsByDimension(world);
         }
         if (pingTimer >= PING_INTERVAL) {
             pingTimer = 0.0;
@@ -481,6 +492,13 @@ final class MultiplayerManager {
         }
         if ("list".equals(command)) {
             sendCommandFeedback(senderUuid, playerListText());
+        } else if ("help".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            sendCommandFeedback(senderUuid, allowCheats
+                ? "Commands: /help, /list, /ping, /msg, /tp, /kill, /summon, /setblock, /fill, /clear, /give, /gamemode"
+                : "Commands: /help, /list, /ping, /msg");
         } else if ("ping".equals(command)) {
             sendCommandFeedback(senderUuid, "Ping: " + pingFor(senderUuid));
         } else if ("msg".equals(command)) {
@@ -488,6 +506,128 @@ final class MultiplayerManager {
                 sendCommandFeedback(senderUuid, "Usage: /msg <player> <message>");
             } else {
                 sendPrivateMessage(senderUuid, senderName, parts[1], parts[2]);
+            }
+        } else if ("tp".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
+            String[] teleportParts = raw.split("\\s+");
+            if (teleportParts.length != 4) {
+                sendCommandFeedback(senderUuid, "Usage: /tp <x> <y> <z>");
+                return;
+            }
+            try {
+                double x = Double.parseDouble(teleportParts[1]);
+                double y = Double.parseDouble(teleportParts[2]);
+                double z = Double.parseDouble(teleportParts[3]);
+                if (!teleportPlayerByName(senderName, x, y, z)) {
+                    sendCommandFeedback(senderUuid, "Cannot teleport to those coordinates.");
+                    return;
+                }
+                sendCommandFeedback(senderUuid, "Teleported to " + x + " " + y + " " + z + ".");
+            } catch (NumberFormatException exception) {
+                sendCommandFeedback(senderUuid, "Usage: /tp <x> <y> <z>");
+            }
+        } else if ("kill".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
+            if (parts.length != 1 || !killPlayerByName(senderName)) {
+                sendCommandFeedback(senderUuid, "Usage: /kill");
+                return;
+            }
+            sendCommandFeedback(senderUuid, "Killed " + senderName + ".");
+        } else if ("summon".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
+            MobKind kind = parts.length == 2 ? ChatSystem.resolveMobKind(parts[1]) : null;
+            if (kind == null || !summonMobAtPlayerByName(senderName, kind)) {
+                sendCommandFeedback(senderUuid, "Usage: /summon <zombie|skeleton|pig|sheep|cow|villager|herring|salmon>");
+                return;
+            }
+            sendCommandFeedback(senderUuid, "Summoned " + parts[1] + ".");
+        } else if ("setblock".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
+            String[] blockParts = raw.split("\\s+");
+            if (blockParts.length != 5) {
+                sendCommandFeedback(senderUuid, "Usage: /setblock <x> <y> <z> <block>");
+                return;
+            }
+            BlockState state = ChatSystem.resolveCommandBlockState(blockParts[4]);
+            if (state == null) {
+                sendCommandFeedback(senderUuid, "Unknown block: " + blockParts[4]);
+                return;
+            }
+            try {
+                int changed = setBlockByCommand(
+                    senderName,
+                    Integer.parseInt(blockParts[1]),
+                    Integer.parseInt(blockParts[2]),
+                    Integer.parseInt(blockParts[3]),
+                    state
+                );
+                sendCommandFeedback(senderUuid, commandBlockFeedback(changed, false));
+            } catch (NumberFormatException exception) {
+                sendCommandFeedback(senderUuid, "Coordinates must be whole numbers.");
+            }
+        } else if ("fill".equals(command)) {
+            if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
+            String[] fillParts = raw.split("\\s+");
+            if (fillParts.length != 8) {
+                sendCommandFeedback(senderUuid, "Usage: /fill <x1> <y1> <z1> <x2> <y2> <z2> <block>");
+                return;
+            }
+            BlockState state = ChatSystem.resolveCommandBlockState(fillParts[7]);
+            if (state == null) {
+                sendCommandFeedback(senderUuid, "Unknown block: " + fillParts[7]);
+                return;
+            }
+            try {
+                int x1 = Integer.parseInt(fillParts[1]);
+                int y1 = Integer.parseInt(fillParts[2]);
+                int z1 = Integer.parseInt(fillParts[3]);
+                int x2 = Integer.parseInt(fillParts[4]);
+                int y2 = Integer.parseInt(fillParts[5]);
+                int z2 = Integer.parseInt(fillParts[6]);
+                int minX = Math.min(x1, x2);
+                int minY = Math.min(y1, y2);
+                int minZ = Math.min(z1, z2);
+                int maxX = Math.max(x1, x2);
+                int maxY = Math.max(y1, y2);
+                int maxZ = Math.max(z1, z2);
+                if (ChatSystem.fillBlockCount(minX, minY, minZ, maxX, maxY, maxZ) > ChatSystem.MAX_FILL_BLOCKS) {
+                    sendCommandFeedback(senderUuid, "Too many blocks. Maximum: " + ChatSystem.MAX_FILL_BLOCKS + ".");
+                    return;
+                }
+                int changed = fillBlocksByCommand(senderName, minX, minY, minZ, maxX, maxY, maxZ, state);
+                sendCommandFeedback(senderUuid, commandBlockFeedback(changed, true));
+            } catch (NumberFormatException exception) {
+                sendCommandFeedback(senderUuid, "Coordinates must be whole numbers.");
             }
         } else if ("kick".equals(command)) {
             if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
@@ -507,6 +647,10 @@ final class MultiplayerManager {
             if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
                 return;
             }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
+                return;
+            }
             ServerClient client = senderUuid == null ? null : serverClients.get(senderUuid);
             if (client == null) {
                 sendCommandFeedback(senderUuid, "Only connected clients can use /clear in multiplayer.");
@@ -517,6 +661,10 @@ final class MultiplayerManager {
             sendCommandFeedback(senderUuid, "Inventory cleared.");
         } else if ("give".equals(command)) {
             if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
+                return;
+            }
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
                 return;
             }
             ServerClient client = senderUuid == null ? null : serverClients.get(senderUuid);
@@ -542,8 +690,8 @@ final class MultiplayerManager {
             if (runDelegatedServerCommand(senderUuid, senderName, raw)) {
                 return;
             }
-            if (profile != null && (senderUuid == null || !profile.uuid.equals(senderUuid))) {
-                sendCommandFeedback(senderUuid, "Only the host can use /gamemode on this LAN world.");
+            if (!allowCheats) {
+                sendCommandFeedback(senderUuid, "Cheats are not enabled on this LAN world.");
                 return;
             }
             if (parts.length < 2) {
@@ -552,6 +700,11 @@ final class MultiplayerManager {
             }
             String mode = parts[1].toLowerCase(Locale.ROOT);
             String targetName = parts.length >= 3 ? parts[2] : senderName;
+            boolean hostSender = profile != null && profile.uuid.equals(senderUuid);
+            if (!hostSender && senderName != null && !senderName.equalsIgnoreCase(targetName)) {
+                sendCommandFeedback(senderUuid, "You can only change your own game mode.");
+                return;
+            }
             if (!isValidGameModeName(mode)) {
                 sendCommandFeedback(senderUuid, "Unknown gamemode: " + parts[1]);
                 return;
@@ -627,12 +780,17 @@ final class MultiplayerManager {
     }
 
     private void sendPrivateMessage(UUID senderUuid, String senderName, String targetName, String message) {
+        String from = senderName == null || senderName.trim().isEmpty() ? "Server" : senderName;
+        if (profile != null && profile.name.equalsIgnoreCase(targetName)) {
+            emitChat("[PM] <" + from + "> " + message);
+            sendCommandFeedback(senderUuid, "[PM to " + profile.name + "] " + message);
+            return;
+        }
         ServerClient target = findClientByName(targetName);
         if (target == null) {
             sendCommandFeedback(senderUuid, "Player not found: " + targetName);
             return;
         }
-        String from = senderName == null || senderName.trim().isEmpty() ? "Server" : senderName;
         String formatted = "[PM] <" + from + "> " + message;
         send(target.connection, MultiplayerProtocol.CHAT, output -> output.writeUTF(formatted));
         sendCommandFeedback(senderUuid, "[PM to " + target.name + "] " + message);
@@ -792,16 +950,75 @@ final class MultiplayerManager {
         return client == null ? null : client.name;
     }
 
+    int setBlockByCommand(String playerName, int x, int y, int z, BlockState state) {
+        VoxelWorld world = activeWorld;
+        if (world == null) {
+            return -2;
+        }
+        int dimensionId = GameConfig.DIMENSION_OVERWORLD;
+        if (playerName != null) {
+            ServerClient client = findClientByName(playerName);
+            if (client == null || !client.connection.open) {
+                return -2;
+            }
+            dimensionId = client.player.dimensionId;
+        }
+        int previousDimension = world.activeDimensionId();
+        world.setActiveDimension(dimensionId);
+        int changed = world.setBlockStateForCommand(x, y, z, state);
+        if (changed > 0) {
+            broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
+        }
+        world.setActiveDimension(previousDimension);
+        return changed;
+    }
+
+    int fillBlocksByCommand(String playerName, int minX, int minY, int minZ,
+                            int maxX, int maxY, int maxZ, BlockState state) {
+        VoxelWorld world = activeWorld;
+        if (world == null) {
+            return -2;
+        }
+        int dimensionId = GameConfig.DIMENSION_OVERWORLD;
+        if (playerName != null) {
+            ServerClient client = findClientByName(playerName);
+            if (client == null || !client.connection.open) {
+                return -2;
+            }
+            dimensionId = client.player.dimensionId;
+        }
+        int previousDimension = world.activeDimensionId();
+        world.setActiveDimension(dimensionId);
+        int changed = world.fillBlockStateForCommand(minX, minY, minZ, maxX, maxY, maxZ, state);
+        if (changed > 0) {
+            broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
+        }
+        world.setActiveDimension(previousDimension);
+        return changed;
+    }
+
+    private String commandBlockFeedback(int changed, boolean fill) {
+        if (changed == -1) {
+            return "Coordinates are outside the world.";
+        }
+        if (changed < 0) {
+            return "Cannot edit blocks for this player.";
+        }
+        if (fill) {
+            return "Filled " + changed + " block(s).";
+        }
+        return changed == 0 ? "No blocks were changed." : "Changed the block.";
+    }
+
     boolean teleportPlayerByName(String targetName, double x, double y, double z) {
         ServerClient client = findClientByName(targetName);
         VoxelWorld world = activeWorld;
         if (client == null || !client.connection.open || world == null || !isFinite(x) || !isFinite(y) || !isFinite(z)) {
             return false;
         }
-        if (!world.isInside((int) Math.floor(x), (int) Math.floor(Math.max(GameConfig.WORLD_MIN_Y, Math.min(GameConfig.WORLD_MAX_Y, y))), (int) Math.floor(z))) {
+        if (!world.isInside((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z))) {
             return false;
         }
-        y = world.safeStandingYAt(x, z);
         client.player.setPosition(x, y, z);
         client.player.capturePreviousPosition();
         client.teleportGraceUntilMillis = System.currentTimeMillis() + 1500L;
@@ -900,9 +1117,64 @@ final class MultiplayerManager {
 
     PlayerState firstConnectedPlayer() {
         for (ServerClient client : serverClients.values()) {
-            return client.player;
+            if (client.connection.open) {
+                return client.player;
+            }
         }
         return activeHostPlayer;
+    }
+
+    private void simulateAdditionalDimensions(VoxelWorld world, PlayerState primaryPlayer, double deltaTime) {
+        if (world == null || primaryPlayer == null || serverClients.isEmpty()) {
+            return;
+        }
+        ArrayList<PlayerState> connectedPlayers = new ArrayList<>();
+        for (ServerClient client : serverClients.values()) {
+            if (client.connection.open) {
+                connectedPlayers.add(client.player);
+            }
+        }
+        List<PlayerState> additionalPlayers = selectAdditionalDimensionPlayers(primaryPlayer, connectedPlayers);
+        try {
+            for (PlayerState player : additionalPlayers) {
+                world.prepareForPlayer(player);
+                world.updateDroppedItems(player, null, deltaTime);
+                world.updateMobs(player, deltaTime);
+                ColumnUpdateList dirtyFromTicks = world.updateWorldTicks(player, deltaTime);
+                broadcastBlockUpdates(world, dirtyFromTicks);
+                broadcastBlockUpdates(world, world.drainNetworkDirtyBlocks());
+            }
+        } finally {
+            world.setActiveDimensionForSimulation(primaryPlayer);
+        }
+    }
+
+    static List<PlayerState> selectAdditionalDimensionPlayers(PlayerState primaryPlayer, List<PlayerState> players) {
+        ArrayList<PlayerState> selected = new ArrayList<>();
+        if (players == null || players.isEmpty()) {
+            return selected;
+        }
+        int primaryDimensionId = primaryPlayer == null
+            ? Integer.MIN_VALUE
+            : normalizedDimensionId(primaryPlayer.dimensionId);
+        HashSet<Integer> selectedDimensions = new HashSet<>();
+        for (PlayerState player : players) {
+            if (player == null) {
+                continue;
+            }
+            int dimensionId = normalizedDimensionId(player.dimensionId);
+            if (dimensionId == primaryDimensionId || !selectedDimensions.add(dimensionId)) {
+                continue;
+            }
+            selected.add(player);
+        }
+        return selected;
+    }
+
+    private static int normalizedDimensionId(int dimensionId) {
+        return GameConfig.isParadiseDimension(dimensionId)
+            ? GameConfig.DIMENSION_PARADISE
+            : GameConfig.DIMENSION_OVERWORLD;
     }
 
     void broadcastBlockNeighborhood(VoxelWorld world, int x, int y, int z) {
@@ -1040,18 +1312,23 @@ final class MultiplayerManager {
             }
         } finally {
             closeQuietly(connection);
-            if (uuid != null) {
-                ServerClient removed = acceptedClient != null && serverClients.remove(uuid, acceptedClient) ? acceptedClient : null;
-                if (removed != null) {
-                    world.saveNetworkPlayerState(removed.uuid, removed.player, removed.inventory);
-                    mainThreadEvents.add(() -> world.removeRemotePlayer(removed.uuid));
-                    broadcastDespawn(uuid);
-                    emitChat(removed.name + " left the world.");
-                    if (profile == null) {
-                        System.out.println("Leave: " + removed.name + " " + removed.uuid);
-                    }
-                }
+            if (uuid != null && acceptedClient != null) {
+                ServerClient disconnectedClient = acceptedClient;
+                queueServerAction(() -> finishServerClientDisconnect(world, disconnectedClient));
             }
+        }
+    }
+
+    private void finishServerClientDisconnect(VoxelWorld world, ServerClient client) {
+        if (client == null || !serverClients.remove(client.uuid, client)) {
+            return;
+        }
+        world.saveNetworkPlayerState(client.uuid, client.player, client.inventory);
+        world.removeRemotePlayer(client.uuid);
+        broadcastDespawn(client.uuid);
+        emitChat(client.name + " left the world.");
+        if (profile == null) {
+            System.out.println("Leave: " + client.name + " " + client.uuid);
         }
     }
 
@@ -1060,7 +1337,8 @@ final class MultiplayerManager {
         if (packet.type == MultiplayerProtocol.PLAYER_STATE) {
             requireRate(client.playerStateRate, PLAYER_STATE_RATE, client, "Too many player state packets.");
             requirePayloadLimit(packet, 256);
-            readPlayerStateInto(client, input);
+            PlayerStateUpdate update = readPlayerStateUpdate(client, input);
+            queueServerAction(() -> applyPlayerStateUpdate(client, update));
         } else if (packet.type == MultiplayerProtocol.CHAT) {
             requireRate(client.chatCommandRate, CHAT_COMMAND_RATE, client, "Too many chat packets.");
             requirePayloadLimit(packet, MultiplayerProtocol.MAX_TEXT_BYTES);
@@ -1092,14 +1370,14 @@ final class MultiplayerManager {
             requireRate(client.attackRate, ATTACK_RATE, client, "Too many attack packets.");
             requirePayloadLimit(packet, 20);
             UUID targetUuid = MultiplayerProtocol.readUuid(input);
-            int damage = input.readInt();
-            applyPlayerAttack(client.uuid, targetUuid, damage);
+            input.readInt();
+            mainThreadEvents.add(() -> applyRemotePlayerAttack(client, targetUuid));
         } else if (packet.type == MultiplayerProtocol.MOB_ATTACK) {
             requireRate(client.attackRate, ATTACK_RATE, client, "Too many attack packets.");
             requirePayloadLimit(packet, 12);
-            int damage = input.readInt();
-            double knockback = input.readDouble();
-            applyMobAttack(client, damage, knockback);
+            input.readInt();
+            input.readDouble();
+            mainThreadEvents.add(() -> applyMobAttack(client));
         } else if (packet.type == MultiplayerProtocol.PING) {
             requirePayloadLimit(packet, 8);
             long timestamp = input.readLong();
@@ -1114,38 +1392,52 @@ final class MultiplayerManager {
         } else if (packet.type == MultiplayerProtocol.COMMAND) {
             requireRate(client.chatCommandRate, CHAT_COMMAND_RATE, client, "Too many command packets.");
             requirePayloadLimit(packet, MultiplayerProtocol.MAX_TEXT_BYTES);
-            handleServerCommand(client.uuid, client.name, input.readUTF());
+            String commandLine = input.readUTF();
+            mainThreadEvents.add(() -> handleServerCommand(client.uuid, client.name, commandLine));
         } else if (packet.type == MultiplayerProtocol.CONTAINER_OPEN_REQUEST) {
             requireRate(client.containerClickRate, CONTAINER_CLICK_RATE, client, "Too many container packets.");
             requirePayloadLimit(packet, 16);
-            handleContainerOpenRequest(client, input);
+            int screenMode = input.readInt();
+            int x = input.readInt();
+            int y = input.readInt();
+            int z = input.readInt();
+            queueServerAction(() -> runInClientDimension(client,
+                () -> handleContainerOpenRequest(client, screenMode, x, y, z)));
         } else if (packet.type == MultiplayerProtocol.CONTAINER_CLICK) {
             requireRate(client.containerClickRate, CONTAINER_CLICK_RATE, client, "Too many container clicks.");
             requirePayloadLimit(packet, 18);
-            handleContainerClick(client, input);
+            int windowId = input.readInt();
+            int groupOrdinal = input.readInt();
+            int slotIndex = input.readInt();
+            boolean rightClick = input.readBoolean();
+            boolean shiftDown = input.readBoolean();
+            boolean middleClick = input.readBoolean();
+            queueServerAction(() -> runInClientDimension(client,
+                () -> handleContainerClick(client, windowId, groupOrdinal, slotIndex,
+                    rightClick, shiftDown, middleClick)));
         } else if (packet.type == MultiplayerProtocol.CONTAINER_CLOSE) {
             requirePayloadLimit(packet, 4);
             int windowId = input.readInt();
-            if (client.activeWindowId == windowId) {
-                closeServerContainer(client);
-            }
+            queueServerAction(() -> handleContainerClose(client, windowId));
         } else if (packet.type == MultiplayerProtocol.ITEM_DROP) {
             requireRate(client.containerClickRate, CONTAINER_CLICK_RATE, client, "Too many item drops.");
             requirePayloadLimit(packet, 9);
-            handleItemDrop(client, input);
+            int dimensionId = input.readInt();
+            int selectedHotbarSlot = input.readInt();
+            boolean dropStack = input.readBoolean();
+            queueServerAction(() -> runInClientDimension(client,
+                () -> handleItemDrop(client, dimensionId, selectedHotbarSlot, dropStack)));
         } else if (packet.type == MultiplayerProtocol.DISCONNECT) {
             closeQuietly(client.connection);
         }
     }
 
-    private void readPlayerStateInto(ServerClient client, DataInputStream input) throws IOException {
+    private PlayerStateUpdate readPlayerStateUpdate(ServerClient client, DataInputStream input) throws IOException {
         UUID packetUuid = MultiplayerProtocol.readUuid(input);
         String packetName = LocalProfile.sanitizeName(input.readUTF(), client.name);
         if (!client.uuid.equals(packetUuid)) {
             throw new IOException("player uuid mismatch");
         }
-        client.name = packetName;
-        client.player.capturePreviousPosition();
         int packetDimensionId = input.readInt();
         double x = input.readDouble();
         double y = input.readDouble();
@@ -1153,35 +1445,65 @@ final class MultiplayerManager {
         double yaw = input.readDouble();
         double pitch = input.readDouble();
         input.readByte();
-        client.player.sneaking = input.readBoolean();
+        boolean sneaking = input.readBoolean();
         input.readBoolean();
         double packetHealth = input.readDouble();
         int selectedHotbarSlot = input.available() >= 4 ? input.readInt() : 0;
         if (!isFinite(x) || !isFinite(y) || !isFinite(z) || !isFinite(yaw) || !isFinite(pitch) || !isFinite(packetHealth)) {
             throw new IOException("invalid player state");
         }
-        if (packetDimensionId != client.player.dimensionId) {
+        return new PlayerStateUpdate(packetName, packetDimensionId, x, y, z, yaw, pitch, sneaking,
+            selectedHotbarSlot);
+    }
+
+    private void applyPlayerStateUpdate(ServerClient client, PlayerStateUpdate update) {
+        if (update.dimensionId != client.player.dimensionId) {
             if (client.teleportGraceUntilMillis <= System.currentTimeMillis()) {
-                throw new IOException("player dimension mismatch");
+                rejectQueuedClientAction(client, "Invalid player dimension.");
+                return;
             }
-            client.player.dimensionId = packetDimensionId;
+            client.player.dimensionId = update.dimensionId;
         }
         if (client.teleportGraceUntilMillis <= System.currentTimeMillis()) {
-            double dx = x - client.player.x;
-            double dy = y - client.player.y;
-            double dz = z - client.player.z;
+            double dx = update.x - client.player.x;
+            double dy = update.y - client.player.y;
+            double dz = update.z - client.player.z;
             if (dx * dx + dy * dy + dz * dz > 48.0 * 48.0) {
-                throw new IOException("player moved too far");
+                rejectQueuedClientAction(client, "Invalid player movement.");
+                return;
             }
         }
-        client.player.x = x;
-        client.player.y = y;
-        client.player.z = z;
-        client.player.yaw = yaw;
-        client.player.pitch = Math.max(-GameConfig.MAX_PITCH, Math.min(GameConfig.MAX_PITCH, pitch));
-        client.selectedHotbarSlot = clampHotbarSlot(selectedHotbarSlot);
+        client.name = update.name;
+        client.player.capturePreviousPosition();
+        client.player.x = update.x;
+        client.player.y = update.y;
+        client.player.z = update.z;
+        client.player.yaw = update.yaw;
+        client.player.pitch = Math.max(-GameConfig.MAX_PITCH, Math.min(GameConfig.MAX_PITCH, update.pitch));
+        client.player.sneaking = update.sneaking;
+        client.selectedHotbarSlot = clampHotbarSlot(update.selectedHotbarSlot);
         client.heldItem = authoritativeHeldItem(client);
-        mainThreadEvents.add(() -> client.worldUpdate(packetName));
+        client.worldUpdate(update.name);
+    }
+
+    private void rejectQueuedClientAction(ServerClient client, String message) {
+        sendDisconnect(client.connection, message);
+        closeQuietly(client.connection);
+    }
+
+    private void runInClientDimension(ServerClient client, Runnable action) {
+        VoxelWorld world = activeWorld;
+        if (world == null) {
+            action.run();
+            return;
+        }
+        int originalDimensionId = world.activeDimensionId();
+        try {
+            world.setActiveDimensionForSimulation(client.player);
+            action.run();
+        } finally {
+            world.setActiveDimensionForSimulation(originalDimensionId);
+        }
     }
 
     private void processHostRequests(VoxelWorld world) {
@@ -1238,6 +1560,7 @@ final class MultiplayerManager {
                 actorClient.selectedHotbarSlot = clampHotbarSlot(action.selectedHotbarSlot);
                 byte authoritativeHeldItem = authoritativeHeldItem(actorClient);
                 byte targetBlock = world.getBlock(action.x, action.y, action.z);
+                BlockState targetState = world.getBlockState(action.x, action.y, action.z);
                 if (!canStartBreakBlockServer(targetBlock, authoritativeHeldItem, actorClient.player.creativeMode)) {
                     sendCommandFeedback(actorClient.uuid, "Rejected block action: cannot break with selected item.");
                     continue;
@@ -1245,20 +1568,29 @@ final class MultiplayerManager {
                 if (!actorClient.player.creativeMode) {
                     double requiredMillis = breakDurationSeconds(targetBlock, authoritativeHeldItem, false) * 1000.0;
                     boolean started = matchesStoredBreak(actorClient, action, authoritativeHeldItem);
-                    double elapsedMillis = started
-                        ? System.currentTimeMillis() - actorClient.breakingStartedMillis
-                        : requiredMillis;
-                    if (elapsedMillis + 125.0 < requiredMillis) {
+                    long nowMillis = System.currentTimeMillis();
+                    if (!isServerBreakCompletionValid(
+                        started,
+                        actorClient.breakingStartedMillis,
+                        nowMillis,
+                        requiredMillis
+                    )) {
+                        if (!started) {
+                            clearStoredBreak(actorClient);
+                        }
                         sendCommandFeedback(actorClient.uuid, "Rejected block action: block is not broken yet.");
                         continue;
                     }
                 }
                 changed = world.breakBlock(new RayHit(action.x, action.y, action.z, action.x, action.y, action.z));
                 if (changed) {
-                    byte droppedItem = droppedItemForBrokenBlock(targetBlock);
-                    if (droppedItem != GameConfig.AIR && canHarvestBlock(targetBlock, authoritativeHeldItem)) {
-                        world.spawnDroppedItem(droppedItem, 1, action.x + 0.5, action.y + 0.2, action.z + 0.5);
-                    }
+                    BlockDropRules.DropPlan dropPlan = BlockDropRules.forBrokenBlock(
+                        targetBlock,
+                        targetState == null ? 0 : targetState.data,
+                        authoritativeHeldItem,
+                        actorClient.player.creativeMode
+                    );
+                    world.spawnBlockDrops(dropPlan, action.x, action.y, action.z);
                     if (!actorClient.player.creativeMode && shouldDamageToolForBlock(authoritativeHeldItem, targetBlock)) {
                         actorClient.inventory.damageSelectedItem(actorClient.selectedHotbarSlot, 1);
                         sendInventorySync(actorClient);
@@ -1348,6 +1680,14 @@ final class MultiplayerManager {
         client.breakingHotbarSlot = 0;
     }
 
+    static boolean isServerBreakCompletionValid(boolean matchingStart, long startedMillis, long nowMillis, double requiredMillis) {
+        if (!matchingStart || startedMillis <= 0L || nowMillis < startedMillis) {
+            return false;
+        }
+        double safeRequiredMillis = Math.max(0.0, requiredMillis);
+        return nowMillis - startedMillis + BREAK_COMPLETION_TOLERANCE_MS >= safeRequiredMillis;
+    }
+
     private int clampHotbarSlot(int selectedHotbarSlot) {
         if (selectedHotbarSlot < 0 || selectedHotbarSlot >= PlayerInventory.HOTBAR_SIZE) {
             return 0;
@@ -1363,10 +1703,8 @@ final class MultiplayerManager {
         return stack == null || stack.isEmpty() ? GameConfig.AIR : stack.itemId;
     }
 
-    private void handleItemDrop(ServerClient client, DataInputStream input) throws IOException {
-        int dimensionId = input.readInt();
-        int selectedHotbarSlot = clampHotbarSlot(input.readInt());
-        boolean dropStack = input.readBoolean();
+    private void handleItemDrop(ServerClient client, int dimensionId, int requestedHotbarSlot, boolean dropStack) {
+        int selectedHotbarSlot = clampHotbarSlot(requestedHotbarSlot);
         if (activeWorld == null || client == null || !client.connection.open
             || client.player.health <= 0.0 || client.player.spectatorMode) {
             return;
@@ -1450,11 +1788,7 @@ final class MultiplayerManager {
         return true;
     }
 
-    private void handleContainerOpenRequest(ServerClient client, DataInputStream input) throws IOException {
-        int screenMode = input.readInt();
-        int x = input.readInt();
-        int y = input.readInt();
-        int z = input.readInt();
+    private void handleContainerOpenRequest(ServerClient client, int screenMode, int x, int y, int z) {
         if (!client.connection.open || client.player.health <= 0.0) {
             sendCommandFeedback(client.uuid, "Cannot open container right now.");
             return;
@@ -1489,24 +1823,21 @@ final class MultiplayerManager {
         return isContainerBlockAllowed(screenMode, world.getBlock(x, y, z));
     }
 
-    private void handleContainerClick(ServerClient client, DataInputStream input) throws IOException {
-        int windowId = input.readInt();
-        int groupOrdinal = input.readInt();
-        int slotIndex = input.readInt();
-        boolean rightClick = input.readBoolean();
-        boolean shiftDown = input.readBoolean();
-        boolean middleClick = input.readBoolean();
+    private void handleContainerClick(ServerClient client, int windowId, int groupOrdinal, int slotIndex,
+                                      boolean rightClick, boolean shiftDown, boolean middleClick) {
         if (windowId != client.activeWindowId || client.activeWindowId <= 0) {
             sendCommandFeedback(client.uuid, "Container action rejected: stale window.");
             return;
         }
         InventorySlotGroup[] groups = InventorySlotGroup.values();
         if (groupOrdinal < 0 || groupOrdinal >= groups.length) {
-            throw new IOException("invalid inventory slot group");
+            rejectQueuedClientAction(client, "Invalid inventory slot group.");
+            return;
         }
         InventorySlotRef ref = new InventorySlotRef(groups[groupOrdinal], slotIndex);
         if (!isValidSlotRefForScreen(ref, client.activeScreenMode)) {
-            throw new IOException("invalid inventory slot index");
+            rejectQueuedClientAction(client, "Invalid inventory slot index.");
+            return;
         }
         VoxelWorld world = activeWorld;
         if (world == null || !isValidContainerTarget(world, client, client.activeScreenMode, client.activeContainerX, client.activeContainerY, client.activeContainerZ)) {
@@ -1598,12 +1929,19 @@ final class MultiplayerManager {
         return world.furnaceAt(client.activeContainerX, client.activeContainerY, client.activeContainerZ);
     }
 
+    private void handleContainerClose(ServerClient client, int windowId) {
+        if (client.activeWindowId == windowId) {
+            closeServerContainer(client);
+        }
+    }
+
     private void closeServerContainer(ServerClient client) {
         client.inventory.returnTransientCraftingToInventory();
         ItemStack cursor = client.inventory.getCursorStack();
         if (cursor != null && !cursor.isEmpty()) {
-            client.inventory.addItem(cursor.itemId, cursor.count, cursor.durabilityDamage);
-            cursor.clear();
+            if (client.inventory.addItem(cursor.itemId, cursor.count, cursor.durabilityDamage)) {
+                cursor.clear();
+            }
         }
         client.activeWindowId = 0;
         client.activeScreenMode = GameConfig.INVENTORY_SCREEN_PLAYER;
@@ -1683,17 +2021,22 @@ final class MultiplayerManager {
             return;
         }
         containerUpdateTimer = 0.0;
-        for (ServerClient client : serverClients.values()) {
-            if (!client.connection.open
-                || client.activeWindowId <= 0
-                || client.activeScreenMode != GameConfig.INVENTORY_SCREEN_FURNACE) {
-                continue;
+        int originalDimensionId = world.activeDimensionId();
+        try {
+            for (ServerClient client : serverClients.values()) {
+                if (!client.connection.open
+                    || client.activeWindowId <= 0
+                    || client.activeScreenMode != GameConfig.INVENTORY_SCREEN_FURNACE) {
+                    continue;
+                }
+                world.setActiveDimensionForSimulation(client.player);
+                if (!isValidContainerTarget(world, client, client.activeScreenMode, client.activeContainerX, client.activeContainerY, client.activeContainerZ)) {
+                    continue;
+                }
+                sendContainerUpdate(client, world);
             }
-            world.setActiveDimensionFor(client.player);
-            if (!isValidContainerTarget(world, client, client.activeScreenMode, client.activeContainerX, client.activeContainerY, client.activeContainerZ)) {
-                continue;
-            }
-            sendContainerUpdate(client, world);
+        } finally {
+            world.setActiveDimensionForSimulation(originalDimensionId);
         }
     }
 
@@ -2065,9 +2408,19 @@ final class MultiplayerManager {
         output.writeDouble(player.health);
     }
 
-    private void applyPlayerAttack(UUID attackerUuid, UUID targetUuid, int damage) {
-        if (!hostRunning || attackerUuid == null || targetUuid == null || damage <= 0) {
+    private void applyRemotePlayerAttack(ServerClient client, UUID targetUuid) {
+        if (client == null || !client.connection.open) {
             return;
+        }
+        byte heldItem = authoritativeHeldItem(client);
+        if (applyPlayerAttack(client.uuid, targetUuid, InventoryItems.meleeDamage(heldItem))) {
+            damageServerHeldItem(client);
+        }
+    }
+
+    private boolean applyPlayerAttack(UUID attackerUuid, UUID targetUuid, int damage) {
+        if (!hostRunning || attackerUuid == null || targetUuid == null || damage <= 0) {
+            return false;
         }
         PlayerState attacker = profile != null && profile.uuid.equals(attackerUuid)
             ? activeHostPlayer
@@ -2075,19 +2428,20 @@ final class MultiplayerManager {
         PlayerState target = profile != null && profile.uuid.equals(targetUuid)
             ? activeHostPlayer
             : serverClients.containsKey(targetUuid) ? serverClients.get(targetUuid).player : null;
-        if (!allowPvp && serverClients.containsKey(targetUuid)) {
-            return;
+        if (!allowPvp || attackerUuid.equals(targetUuid)) {
+            return false;
         }
-        if (attacker == null || target == null || target.spectatorMode || target.health <= 0.0) {
-            return;
+        if (attacker == null || target == null || attacker.spectatorMode || attacker.health <= 0.0
+            || target.spectatorMode || target.health <= 0.0 || attacker.dimensionId != target.dimensionId) {
+            return false;
         }
         double dx = target.x - attacker.x;
         double dy = (target.y + target.height() * 0.5) - (attacker.y + attacker.eyeHeight());
         double dz = target.z - attacker.z;
         if (dx * dx + dy * dy + dz * dz > 3.8 * 3.8) {
-            return;
+            return false;
         }
-        double protectedDamage = Math.max(0.5, damage);
+        double protectedDamage = Math.min(10.0, Math.max(0.5, damage));
         target.health = Math.max(0.0, target.health - protectedDamage);
         if (profile == null || !profile.uuid.equals(targetUuid)) {
             ServerClient targetClient = serverClients.get(targetUuid);
@@ -2103,15 +2457,53 @@ final class MultiplayerManager {
                 broadcastPlayerState(targetUuid, targetClient.name, target, targetClient.heldItem);
             }
         }
+        return true;
     }
 
-    private void applyMobAttack(ServerClient client, int damage, double knockback) {
+    boolean killPlayerByName(String targetName) {
+        ServerClient client = findClientByName(targetName);
+        if (client == null || !client.connection.open) {
+            return false;
+        }
+        client.player.health = 0.0;
+        send(client.connection, MultiplayerProtocol.PLAYER_HEALTH, output -> output.writeDouble(0.0));
+        broadcastPlayerState(client.uuid, client.name, client.player, client.heldItem);
+        return true;
+    }
+
+    boolean summonMobAtPlayerByName(String targetName, MobKind kind) {
+        ServerClient client = findClientByName(targetName);
         VoxelWorld world = activeWorld;
-        if (!hostRunning || world == null || client == null || !client.connection.open || damage <= 0) {
+        if (client == null || !client.connection.open || world == null || kind == null) {
+            return false;
+        }
+        world.setActiveDimension(client.player.dimensionId);
+        world.spawnMobAt(kind, client.player.x, client.player.y, client.player.z);
+        broadcastMobSnapshot(world);
+        return true;
+    }
+
+    private void applyMobAttack(ServerClient client) {
+        VoxelWorld world = activeWorld;
+        if (!hostRunning || world == null || client == null || !client.connection.open
+            || client.player.health <= 0.0 || client.player.spectatorMode) {
             return;
         }
-        if (world.attackMobInReach(client.player, damage, knockback)) {
+        byte heldItem = authoritativeHeldItem(client);
+        world.setActiveDimension(client.player.dimensionId);
+        if (world.attackMobInReach(client.player, InventoryItems.meleeDamage(heldItem), InventoryItems.meleeKnockback(heldItem))) {
+            damageServerHeldItem(client);
             broadcastMobSnapshot(world);
+        }
+    }
+
+    private void damageServerHeldItem(ServerClient client) {
+        if (client.player.creativeMode) {
+            return;
+        }
+        if (client.inventory.damageSelectedItem(client.selectedHotbarSlot, 1)) {
+            client.heldItem = authoritativeHeldItem(client);
+            sendInventorySync(client);
         }
     }
 
@@ -2157,7 +2549,11 @@ final class MultiplayerManager {
 
     private void broadcastMobSnapshot(VoxelWorld world) {
         List<MobEntity> mobs = world.getMobs();
+        int dimensionId = world.activeDimensionId();
         for (ServerClient client : serverClients.values()) {
+            if (normalizedDimensionId(client.player.dimensionId) != dimensionId) {
+                continue;
+            }
             send(client.connection, MultiplayerProtocol.MOB_SNAPSHOT, output -> {
                 output.writeInt(Math.min(mobs.size(), 128));
                 for (int i = 0; i < mobs.size() && i < 128; i++) {
@@ -2176,7 +2572,11 @@ final class MultiplayerManager {
 
     private void broadcastDroppedItemSnapshot(VoxelWorld world) {
         List<DroppedItem> items = world.getDroppedItems();
+        int dimensionId = world.activeDimensionId();
         for (ServerClient client : serverClients.values()) {
+            if (normalizedDimensionId(client.player.dimensionId) != dimensionId) {
+                continue;
+            }
             send(client.connection, MultiplayerProtocol.DROPPED_ITEM_SNAPSHOT, output -> {
                 output.writeInt(Math.min(items.size(), 128));
                 for (int i = 0; i < items.size() && i < 128; i++) {
@@ -2192,11 +2592,52 @@ final class MultiplayerManager {
         }
     }
 
+    private void broadcastEntitySnapshotsByDimension(VoxelWorld world) {
+        if (world == null || serverClients.isEmpty()) {
+            return;
+        }
+        int originalDimensionId = world.activeDimensionId();
+        ArrayList<PlayerState> connectedPlayers = new ArrayList<>();
+        for (ServerClient client : serverClients.values()) {
+            if (client.connection.open) {
+                connectedPlayers.add(client.player);
+            }
+        }
+        try {
+            for (PlayerState player : selectAdditionalDimensionPlayers(null, connectedPlayers)) {
+                world.setActiveDimensionForSimulation(player);
+                broadcastMobSnapshot(world);
+                broadcastDroppedItemSnapshot(world);
+            }
+        } finally {
+            world.setActiveDimensionForSimulation(originalDimensionId);
+        }
+    }
+
     private void processRemoteClientItemPickups(VoxelWorld world) {
         if (world == null || serverClients.isEmpty()) {
             return;
         }
+        int originalDimensionId = world.activeDimensionId();
+        ArrayList<PlayerState> connectedPlayers = new ArrayList<>();
+        for (ServerClient client : serverClients.values()) {
+            if (client.connection.open) {
+                connectedPlayers.add(client.player);
+            }
+        }
+        try {
+            for (PlayerState player : selectAdditionalDimensionPlayers(null, connectedPlayers)) {
+                world.setActiveDimensionForSimulation(player);
+                processRemoteClientItemPickupsInActiveDimension(world);
+            }
+        } finally {
+            world.setActiveDimensionForSimulation(originalDimensionId);
+        }
+    }
+
+    private void processRemoteClientItemPickupsInActiveDimension(VoxelWorld world) {
         List<DroppedItem> items = world.getDroppedItems();
+        int dimensionId = world.activeDimensionId();
         double pickupDistance = GameConfig.DROPPED_ITEM_PICKUP_RADIUS;
         double pickupDistanceSquared = pickupDistance * pickupDistance;
         for (int i = items.size() - 1; i >= 0; i--) {
@@ -2205,7 +2646,9 @@ final class MultiplayerManager {
                 continue;
             }
             for (ServerClient client : serverClients.values()) {
-                if (!client.connection.open || client.player.health <= 0.0) {
+                if (!client.connection.open
+                    || client.player.health <= 0.0
+                    || normalizedDimensionId(client.player.dimensionId) != dimensionId) {
                     continue;
                 }
                 double dx = item.x - client.player.x;
@@ -2234,48 +2677,33 @@ final class MultiplayerManager {
         if (world == null || serverClients.isEmpty()) {
             return;
         }
-        for (ServerClient client : serverClients.values()) {
-            if (!client.connection.open || client.player.health <= 0.0) {
-                continue;
+        int originalDimensionId = world.activeDimensionId();
+        try {
+            for (ServerClient client : serverClients.values()) {
+                if (!client.connection.open || client.player.health <= 0.0) {
+                    continue;
+                }
+                world.setActiveDimensionForSimulation(client.player);
+                if (!world.updateParadisePortalTravel(client.player, deltaTime)) {
+                    continue;
+                }
+                if (client.activeWindowId > 0) {
+                    int windowId = client.activeWindowId;
+                    closeServerContainer(client);
+                    send(client.connection, MultiplayerProtocol.CONTAINER_CLOSE, output -> output.writeInt(windowId));
+                }
+                client.teleportGraceUntilMillis = System.currentTimeMillis() + 1500L;
+                sendServerPlayerState(client);
+                broadcastPlayerState(client.uuid, client.name, client.player, client.heldItem);
             }
-            world.setActiveDimensionFor(client.player);
-            if (!world.updateParadisePortalTravel(client.player, deltaTime)) {
-                continue;
-            }
-            if (client.activeWindowId > 0) {
-                int windowId = client.activeWindowId;
-                closeServerContainer(client);
-                send(client.connection, MultiplayerProtocol.CONTAINER_CLOSE, output -> output.writeInt(windowId));
-            }
-            client.teleportGraceUntilMillis = System.currentTimeMillis() + 1500L;
-            sendServerPlayerState(client);
-            broadcastPlayerState(client.uuid, client.name, client.player, client.heldItem);
+        } finally {
+            world.setActiveDimensionForSimulation(originalDimensionId);
         }
-    }
-
-    private byte droppedItemForBrokenBlock(byte block) {
-        if (!InventoryItems.isCollectible(block)
-            || block == GameConfig.OAK_LEAVES
-            || block == GameConfig.PINE_LEAVES
-            || block == GameConfig.BIRCH_LEAVES
-            || block == GameConfig.PARADISE_PORTAL
-            || GameConfig.isLiquidBlock(block)) {
-            return GameConfig.AIR;
-        }
-        if (block == GameConfig.COAL_ORE || block == GameConfig.DEEPSLATE_COAL_ORE) {
-            return InventoryItems.COAL_ITEM;
-        }
-        if (block == GameConfig.DIAMOND_ORE || block == GameConfig.DEEPSLATE_DIAMOND_ORE) {
-            return InventoryItems.DIAMOND_ITEM;
-        }
-        if (block == GameConfig.STONE) {
-            return GameConfig.COBBLESTONE;
-        }
-        return block;
     }
 
     static boolean canBreakBlockServer(byte block, byte heldItem, boolean creativeMode) {
-        return canStartBreakBlockServer(block, heldItem, creativeMode) && (creativeMode || canHarvestBlock(block, heldItem));
+        return canStartBreakBlockServer(block, heldItem, creativeMode)
+            && (creativeMode || BlockDropRules.canHarvestBlock(block, heldItem));
     }
 
     static boolean canStartBreakBlockServer(byte block, byte heldItem, boolean creativeMode) {
@@ -2395,22 +2823,6 @@ final class MultiplayerManager {
             && ((isPickaxe(heldItem) && isStoneHarvestBlock(block))
                 || (isShovel(heldItem) && isDirtLikeBlock(block))
                 || (isAxe(heldItem) && isWoodLikeBlock(block)));
-    }
-
-    private static boolean canHarvestBlock(byte block, byte heldItem) {
-        if (block == GameConfig.OBSIDIAN) {
-            return pickaxeTier(heldItem) >= 4;
-        }
-        if (block == GameConfig.DIAMOND_ORE || block == GameConfig.DEEPSLATE_DIAMOND_ORE) {
-            return pickaxeTier(heldItem) >= 3;
-        }
-        if (block == GameConfig.IRON_ORE || block == GameConfig.DEEPSLATE_IRON_ORE) {
-            return pickaxeTier(heldItem) >= 2;
-        }
-        if (isStoneHarvestBlock(block)) {
-            return pickaxeTier(heldItem) >= 1;
-        }
-        return true;
     }
 
     private static boolean isStoneHarvestBlock(byte block) {
@@ -2686,6 +3098,31 @@ final class MultiplayerManager {
 
     private int unpackDimension(long key) {
         return (int) ((key >>> 56) & 0xFFL);
+    }
+
+    private static final class PlayerStateUpdate {
+        final String name;
+        final int dimensionId;
+        final double x;
+        final double y;
+        final double z;
+        final double yaw;
+        final double pitch;
+        final boolean sneaking;
+        final int selectedHotbarSlot;
+
+        PlayerStateUpdate(String name, int dimensionId, double x, double y, double z, double yaw, double pitch,
+                          boolean sneaking, int selectedHotbarSlot) {
+            this.name = name;
+            this.dimensionId = dimensionId;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
+            this.sneaking = sneaking;
+            this.selectedHotbarSlot = selectedHotbarSlot;
+        }
     }
 
     private static final class Connection {

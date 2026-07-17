@@ -46,7 +46,7 @@ chmod +x run-server.sh
 port=25566
 world=server_world
 maxPlayers=8
-motd=TinyCraft v0.2 Final Server
+motd=TinyCraft v0.2.1 Server
 allowPvp=true
 allowCheats=false
 whitelist=false

@@ -15,7 +15,7 @@ final class ServerProperties {
     String seed = "";
     String terrain = "default";
     int maxPlayers = 8;
-    String motd = "TinyCraft v0.2 Final Server";
+    String motd = "TinyCraft v0.2.1 Server";
     boolean allowPvp = true;
     boolean allowCheats = false;
     boolean whitelist = false;

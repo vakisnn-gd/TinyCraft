@@ -8,6 +8,7 @@ release/
 # Local game/server data
 saves/
 logs/
+screenshots/
 options.txt
 profile.properties
 server.properties

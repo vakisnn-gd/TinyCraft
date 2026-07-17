@@ -1,4 +1,6 @@
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayInputStream;
@@ -12,6 +14,24 @@ import java.util.UUID;
 import org.junit.Test;
 
 public class InventoryNetworkCodecTest {
+    @Test
+    public void addItemDoesNotPartiallyMutateFullInventory() {
+        PlayerInventory inventory = fullCobblestoneInventory();
+        inventory.getHotbarStack(0).set(GameConfig.COBBLESTONE, 63);
+
+        assertFalse(inventory.addItem(GameConfig.COBBLESTONE, 2));
+        assertEquals(63, inventory.getHotbarStack(0).count);
+    }
+
+    @Test
+    public void addItemUsesCapacityWhenWholeStackFits() {
+        PlayerInventory inventory = fullCobblestoneInventory();
+        inventory.getHotbarStack(0).set(GameConfig.COBBLESTONE, 62);
+
+        assertTrue(inventory.addItem(GameConfig.COBBLESTONE, 2));
+        assertEquals(64, inventory.getHotbarStack(0).count);
+    }
+
     @Test
     public void playerInventoryRoundTripsThroughNetworkCodec() throws Exception {
         PlayerInventory inventory = new PlayerInventory();
@@ -99,6 +119,24 @@ public class InventoryNetworkCodecTest {
     }
 
     @Test
+    public void atomicSaveKeepsPreviousFileWhenNewWriteFails() throws Exception {
+        Path target = Files.createTempFile("tinycraft-atomic-save", ".dat");
+        byte[] original = {1, 2, 3, 4};
+        Files.write(target, original);
+
+        try {
+            AtomicFiles.writeData(target, output -> {
+                output.writeInt(12345);
+                throw new java.io.IOException("simulated save failure");
+            });
+        } catch (java.io.IOException expected) {
+            assertArrayEquals(original, Files.readAllBytes(target));
+            return;
+        }
+        throw new AssertionError("Expected the simulated save to fail");
+    }
+
+    @Test
     public void malformedNetworkColumnRunLengthIsRejected() throws Exception {
         ByteArrayOutputStream sectionBytes = new ByteArrayOutputStream();
         DataOutputStream sectionOutput = new DataOutputStream(sectionBytes);
@@ -139,5 +177,16 @@ public class InventoryNetworkCodecTest {
         inventory.writeTo(output);
         output.flush();
         return bytes.toByteArray();
+    }
+
+    private PlayerInventory fullCobblestoneInventory() {
+        PlayerInventory inventory = new PlayerInventory();
+        for (int i = 0; i < PlayerInventory.HOTBAR_SIZE; i++) {
+            inventory.getHotbarStack(i).set(GameConfig.COBBLESTONE, 64);
+        }
+        for (int i = 0; i < PlayerInventory.STORAGE_SIZE; i++) {
+            inventory.getStorageStack(i).set(GameConfig.COBBLESTONE, 64);
+        }
+        return inventory;
     }
 }

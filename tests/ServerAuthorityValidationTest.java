@@ -1,4 +1,6 @@
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.util.UUID;
@@ -58,6 +60,29 @@ public class ServerAuthorityValidationTest {
     }
 
     @Test
+    public void serverActionsAreDeferredAndKeepFifoOrder() throws Exception {
+        MultiplayerManager manager = new MultiplayerManager(null, null);
+        java.util.List<Integer> applied = new java.util.ArrayList<>();
+        Thread[] appliedOn = new Thread[1];
+        Thread producer = new Thread(() -> {
+            manager.queueServerAction(() -> applied.add(1));
+            manager.queueServerAction(() -> {
+                applied.add(2);
+                appliedOn[0] = Thread.currentThread();
+            });
+        }, "test socket producer");
+
+        producer.start();
+        producer.join();
+        assertTrue(applied.isEmpty());
+
+        manager.drainEvents();
+
+        assertEquals(java.util.Arrays.asList(1, 2), applied);
+        assertSame(Thread.currentThread(), appliedOn[0]);
+    }
+
+    @Test
     public void survivalBlockBreakRequiresAuthoritativeToolForStoneLikeBlocks() {
         assertFalse(MultiplayerManager.canBreakBlockServer(GameConfig.STONE, GameConfig.AIR, false));
         assertFalse(MultiplayerManager.canBreakBlockServer(GameConfig.DIAMOND_ORE, InventoryItems.STONE_PICKAXE, false));
@@ -90,6 +115,46 @@ public class ServerAuthorityValidationTest {
     }
 
     @Test
+    public void survivalBreakFinishRequiresMatchingStartedActionAndEnoughTime() {
+        long startedMillis = 10_000L;
+
+        assertFalse(MultiplayerManager.isServerBreakCompletionValid(false, 0L, 12_000L, 1_000.0));
+        assertFalse(MultiplayerManager.isServerBreakCompletionValid(false, startedMillis, 12_000L, 1_000.0));
+        assertFalse(MultiplayerManager.isServerBreakCompletionValid(true, startedMillis, 10_800L, 1_000.0));
+        assertTrue(MultiplayerManager.isServerBreakCompletionValid(true, startedMillis, 10_875L, 1_000.0));
+    }
+
+    @Test
+    public void serverCalculatesMeleeStrengthFromAuthoritativeHeldItem() {
+        assertTrue(InventoryItems.meleeDamage(GameConfig.AIR) == 2);
+        assertTrue(InventoryItems.meleeDamage(InventoryItems.WOODEN_SWORD) == 5);
+        assertTrue(InventoryItems.meleeDamage(InventoryItems.DIAMOND_SWORD) == 8);
+        assertTrue(InventoryItems.meleeDamage(InventoryItems.NETHERITE_AXE) == 10);
+
+        assertTrue(InventoryItems.meleeKnockback(GameConfig.AIR) == 0.42);
+        assertTrue(InventoryItems.meleeKnockback(InventoryItems.IRON_SWORD) == 0.82);
+        assertTrue(InventoryItems.meleeKnockback(InventoryItems.NETHERITE_AXE) == 1.15);
+    }
+
+    @Test
+    public void serverSelectsOneSimulationPlayerPerAdditionalDimension() {
+        PlayerState primary = new PlayerState();
+        PlayerState sameDimension = new PlayerState();
+        PlayerState paradise = new PlayerState();
+        paradise.dimensionId = GameConfig.DIMENSION_PARADISE;
+        PlayerState secondParadisePlayer = new PlayerState();
+        secondParadisePlayer.dimensionId = GameConfig.DIMENSION_PARADISE;
+
+        java.util.List<PlayerState> selected = MultiplayerManager.selectAdditionalDimensionPlayers(
+            primary,
+            java.util.Arrays.asList(sameDimension, paradise, secondParadisePlayer)
+        );
+
+        assertEquals(1, selected.size());
+        assertSame(paradise, selected.get(0));
+    }
+
+    @Test
     public void dedicatedAllowCheatsDoesNotGrantAdminCommands() throws Exception {
         ServerProperties properties = newServerProperties();
         properties.allowCheats = true;
@@ -109,6 +174,51 @@ public class ServerAuthorityValidationTest {
         String result = server.executeServerCommand(UUID.randomUUID(), "Guest", "give diamond 1");
 
         assertTrue(result.contains("do not have permission"));
+    }
+
+    @Test
+    public void dedicatedNewGameplayCommandsRequireAllowCheatsOrOp() throws Exception {
+        ServerProperties properties = newServerProperties();
+        properties.allowCheats = false;
+        GameServer server = new GameServer(properties);
+        UUID guest = UUID.randomUUID();
+
+        assertTrue(server.executeServerCommand(guest, "Guest", "tp 1 70 1").contains("do not have permission"));
+        assertTrue(server.executeServerCommand(guest, "Guest", "kill").contains("do not have permission"));
+        assertTrue(server.executeServerCommand(guest, "Guest", "summon zombie").contains("do not have permission"));
+        assertTrue(server.executeServerCommand(guest, "Guest", "setblock 1 70 1 stone").contains("do not have permission"));
+        assertTrue(server.executeServerCommand(guest, "Guest", "fill 1 70 1 2 70 2 stone").contains("do not have permission"));
+    }
+
+    @Test
+    public void dedicatedCheatsDoNotAllowTargetingAnotherPlayerWithTeleport() throws Exception {
+        ServerProperties properties = newServerProperties();
+        properties.allowCheats = true;
+        GameServer server = new GameServer(properties);
+
+        String result = server.executeServerCommand(UUID.randomUUID(), "Guest", "tp Other 1 70 1");
+
+        assertTrue(result.contains("do not have permission"));
+    }
+
+    @Test
+    public void dedicatedServerDoesNotAcceptRemovedTeleportAlias() throws Exception {
+        ServerProperties properties = newServerProperties();
+        properties.allowCheats = true;
+        GameServer server = new GameServer(properties);
+
+        assertEquals(null, server.executeServerCommand(UUID.randomUUID(), "Guest", "teleport 1 70 1"));
+    }
+
+    @Test
+    public void dedicatedPublicCommandsDoNotRequireCheatsOrOperator() throws Exception {
+        ServerProperties properties = newServerProperties();
+        properties.allowCheats = false;
+        GameServer server = new GameServer(properties);
+
+        String result = server.executeServerCommand(UUID.randomUUID(), "Guest", "help");
+
+        assertTrue(result.startsWith("Commands:"));
     }
 
     private ServerProperties newServerProperties() throws Exception {

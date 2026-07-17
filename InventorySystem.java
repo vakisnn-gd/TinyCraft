@@ -959,6 +959,81 @@ final class InventoryItems {
         }
     }
 
+    static int meleeDamage(byte itemId) {
+        switch (itemId) {
+            case NETHERITE_SWORD:
+                return 9;
+            case DIAMOND_SWORD:
+                return 8;
+            case IRON_SWORD:
+                return 7;
+            case STONE_SWORD:
+                return 6;
+            case WOODEN_SWORD:
+                return 5;
+            case NETHERITE_AXE:
+                return 10;
+            case DIAMOND_AXE:
+                return 9;
+            case IRON_AXE:
+                return 8;
+            case STONE_AXE:
+                return 7;
+            case WOODEN_AXE:
+                return 6;
+            case NETHERITE_PICKAXE:
+                return 7;
+            case DIAMOND_PICKAXE:
+                return 6;
+            case IRON_PICKAXE:
+                return 5;
+            case STONE_PICKAXE:
+            case WOODEN_PICKAXE:
+                return 4;
+            case NETHERITE_SHOVEL:
+            case NETHERITE_HOE:
+                return 5;
+            case DIAMOND_SHOVEL:
+            case DIAMOND_HOE:
+                return 4;
+            case IRON_SHOVEL:
+            case IRON_HOE:
+                return 3;
+            default:
+                return 2;
+        }
+    }
+
+    static double meleeKnockback(byte itemId) {
+        switch (itemId) {
+            case NETHERITE_SWORD:
+            case NETHERITE_AXE:
+                return 1.15;
+            case DIAMOND_SWORD:
+            case DIAMOND_AXE:
+                return 0.95;
+            case IRON_SWORD:
+            case IRON_AXE:
+                return 0.82;
+            case STONE_SWORD:
+            case STONE_AXE:
+                return 0.72;
+            case WOODEN_SWORD:
+            case WOODEN_AXE:
+                return 0.62;
+            case NETHERITE_PICKAXE:
+            case NETHERITE_SHOVEL:
+            case NETHERITE_HOE:
+                return 0.78;
+            case DIAMOND_PICKAXE:
+            case DIAMOND_SHOVEL:
+            case DIAMOND_HOE:
+                return 0.64;
+            default:
+                return 0.42;
+        }
+    }
+
     static int armorSlotIndex(byte itemId) {
         switch (itemId) {
             case IRON_HELMET:
@@ -1980,6 +2055,12 @@ final class PlayerInventory {
         }
 
         int damage = normalizedDurabilityDamage(itemId, durabilityDamage);
+        int remainingCapacity = remainingAfterAvailableSpace(hotbar, itemId, count, damage);
+        remainingCapacity = remainingAfterAvailableSpace(storage, itemId, remainingCapacity, damage);
+        if (remainingCapacity > 0) {
+            return false;
+        }
+
         int remaining = mergeIntoExisting(hotbar, itemId, count, damage, null);
         remaining = mergeIntoExisting(storage, itemId, remaining, damage, null);
         remaining = mergeIntoEmpty(hotbar, itemId, remaining, damage, null);
@@ -2429,6 +2510,23 @@ final class PlayerInventory {
             slot.set(itemId, transfer);
             slot.durabilityDamage = damage;
             remaining -= transfer;
+        }
+        return remaining;
+    }
+
+    private int remainingAfterAvailableSpace(ItemStack[] slots, byte itemId, int remaining, int durabilityDamage) {
+        int maxStack = InventoryItems.maxStackSize(itemId);
+        for (ItemStack slot : slots) {
+            if (remaining <= 0) {
+                return 0;
+            }
+            int available = 0;
+            if (slot.isEmpty()) {
+                available = maxStack;
+            } else if (slot.itemId == itemId && slot.durabilityDamage == durabilityDamage && slot.count < maxStack) {
+                available = maxStack - slot.count;
+            }
+            remaining -= Math.min(available, remaining);
         }
         return remaining;
     }

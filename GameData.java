@@ -6,6 +6,7 @@ import java.nio.file.Paths;
 import java.util.Random;
 
 final class GameConfig {
+    static final String VERSION = "0.2.1";
     static final int WINDOW_WIDTH = 1280;
     static final int WINDOW_HEIGHT = 720;
 
@@ -204,8 +205,14 @@ final class GameConfig {
     static final int FLUID_SIMULATION_CHUNK_DISTANCE = 3;
     static final int MAX_HEALTH = 20;
     static final int MAX_HUNGER = 20;
-    static final double HUNGER_SPRINT_DRAIN_SECONDS = 4.0;
+    static final double HUNGER_GRACE_SECONDS = 120.0;
+    static final double HUNGER_SPRINT_DRAIN_SECONDS = 20.0;
     static final double HUNGER_STARVE_DAMAGE_INTERVAL = 4.0;
+    static final double HUNGER_REGEN_INTERVAL_SECONDS = 4.0;
+    static final double HUNGER_REGEN_MINIMUM = 18.0;
+    static final double HUNGER_REGEN_HEALTH = 1.0;
+    static final double HUNGER_REGEN_COST = 1.0;
+    static final double HUNGER_REGEN_GRACE_COST_SECONDS = 20.0;
     static final double DROPPED_ITEM_RADIUS = 0.16;
     static final double DROPPED_ITEM_HEIGHT = 0.24;
     static final double DROPPED_ITEM_PICKUP_RADIUS = 1.35;
@@ -506,8 +513,9 @@ final class WorldInfo {
     final int gameMode;
     final int difficulty;
     final TerrainPreset terrainPreset;
+    final boolean allowCheats;
 
-    WorldInfo(String name, Path directory, long seed, long lastModifiedMillis, int gameMode, int difficulty, TerrainPreset terrainPreset) {
+    WorldInfo(String name, Path directory, long seed, long lastModifiedMillis, int gameMode, int difficulty, TerrainPreset terrainPreset, boolean allowCheats) {
         this.name = name;
         this.directory = directory;
         this.seed = seed;
@@ -515,6 +523,23 @@ final class WorldInfo {
         this.gameMode = gameMode;
         this.difficulty = difficulty;
         this.terrainPreset = terrainPreset == null ? TerrainPreset.LEGACY : terrainPreset;
+        this.allowCheats = allowCheats;
+    }
+}
+
+final class WorldAccessRules {
+    private WorldAccessRules() {
+    }
+
+    static boolean defaultAllowCheats(int gameMode) {
+        return gameMode == 1 || gameMode == 2;
+    }
+
+    static boolean allowCheatsFromMetadata(String value, int gameMode) {
+        if (value == null || value.trim().isEmpty()) {
+            return defaultAllowCheats(gameMode);
+        }
+        return Boolean.parseBoolean(value.trim());
     }
 }
 
@@ -572,9 +597,14 @@ final class RuntimePaths {
 }
 
 final class Settings {
+    static final int FPS_VSYNC = -1;
+    static final int FPS_UNLIMITED = 0;
+    static final int FPS_MIN = 30;
+    static final int FPS_MAX = 240;
+    private static final int FPS_SLIDER_STEPS = 23;
     static double mouseSensitivity = 0.00081;
     static double mouseVerticalFactor = 0.7407407407;
-    static int inventoryUiSize = 2;
+    static int guiScale = 0;
     static int graphicsQuality = 0;
     static int brightness = 50;
     static int masterVolume = 80;
@@ -586,8 +616,14 @@ final class Settings {
     private Settings() {
     }
 
-    static float inventoryUiScale() {
-        return 0.86f + clampInventoryUiSize(inventoryUiSize) * 0.16f;
+    static float guiScaleMultiplier(int framebufferWidth, int framebufferHeight) {
+        int maxAvailable = Math.max(1, Math.min(
+            Math.max(1, framebufferWidth) / 320,
+            Math.max(1, framebufferHeight) / 240
+        ));
+        int requested = guiScale == 0 ? maxAvailable : clampGuiScale(guiScale);
+        int effective = Math.max(1, Math.min(4, Math.min(requested, maxAvailable)));
+        return 0.86f + effective * 0.16f;
     }
 
     static void load() {
@@ -595,11 +631,15 @@ final class Settings {
         if (!java.nio.file.Files.isRegularFile(path)) {
             return;
         }
+        boolean modernGuiScaleLoaded = false;
         try {
             for (String line : java.nio.file.Files.readAllLines(path, java.nio.charset.StandardCharsets.UTF_8)) {
                 String trimmed = line.trim();
-                if (trimmed.startsWith("inventoryUiSize=")) {
-                    inventoryUiSize = clampInventoryUiSize(Integer.parseInt(trimmed.substring(16)));
+                if (trimmed.startsWith("guiScale=")) {
+                    guiScale = clampGuiScale(Integer.parseInt(trimmed.substring(9)));
+                    modernGuiScaleLoaded = true;
+                } else if (trimmed.startsWith("inventoryUiSize=") && !modernGuiScaleLoaded) {
+                    guiScale = clampGuiScale(Integer.parseInt(trimmed.substring(16)));
                 } else if (trimmed.startsWith("graphicsQuality=")) {
                     graphicsQuality = clampGraphicsQuality(Integer.parseInt(trimmed.substring(16)));
                 } else if (trimmed.startsWith("brightness=")) {
@@ -611,20 +651,20 @@ final class Settings {
                 } else if (trimmed.startsWith("fov=")) {
                     savedFovDegrees = clamp(Integer.parseInt(trimmed.substring(4)), 55, 100);
                 } else if (trimmed.startsWith("maxFps=")) {
-                    savedMaxFps = clamp(Integer.parseInt(trimmed.substring(7)), 30, 240);
+                    savedMaxFps = normalizeMaxFps(Integer.parseInt(trimmed.substring(7)));
                 } else if (trimmed.startsWith("language=")) {
                     String value = trimmed.substring(9).trim().toLowerCase(java.util.Locale.ROOT);
                     language = "en".equals(value) ? "en" : "ru";
                 }
             }
         } catch (RuntimeException | java.io.IOException ignored) {
-            inventoryUiSize = clampInventoryUiSize(inventoryUiSize);
+            guiScale = clampGuiScale(guiScale);
             graphicsQuality = clampGraphicsQuality(graphicsQuality);
             brightness = clampPercent(brightness);
             masterVolume = clampPercent(masterVolume);
             savedRenderDistance = clamp(savedRenderDistance, GameConfig.MIN_RENDER_DISTANCE, GameConfig.MAX_RENDER_DISTANCE_CHUNKS);
             savedFovDegrees = clamp(savedFovDegrees, 55, 100);
-            savedMaxFps = clamp(savedMaxFps, 30, 240);
+            savedMaxFps = normalizeMaxFps(savedMaxFps);
         }
     }
 
@@ -635,15 +675,15 @@ final class Settings {
     static void save(int renderDistance, int fovDegrees, int maxFps) {
         savedRenderDistance = clamp(renderDistance, GameConfig.MIN_RENDER_DISTANCE, GameConfig.MAX_RENDER_DISTANCE_CHUNKS);
         savedFovDegrees = clamp(fovDegrees, 55, 100);
-        savedMaxFps = clamp(maxFps, 30, 240);
-        inventoryUiSize = clampInventoryUiSize(inventoryUiSize);
+        savedMaxFps = normalizeMaxFps(maxFps);
+        guiScale = clampGuiScale(guiScale);
         graphicsQuality = clampGraphicsQuality(graphicsQuality);
         brightness = clampPercent(brightness);
         masterVolume = clampPercent(masterVolume);
         String text = "renderDistance=" + savedRenderDistance + System.lineSeparator()
             + "fov=" + savedFovDegrees + System.lineSeparator()
             + "maxFps=" + savedMaxFps + System.lineSeparator()
-            + "inventoryUiSize=" + inventoryUiSize + System.lineSeparator()
+            + "guiScale=" + guiScale + System.lineSeparator()
             + "graphicsQuality=" + graphicsQuality + System.lineSeparator()
             + "brightness=" + brightness + System.lineSeparator()
             + "masterVolume=" + masterVolume + System.lineSeparator()
@@ -655,8 +695,71 @@ final class Settings {
         }
     }
 
-    private static int clampInventoryUiSize(int value) {
-        return clamp(value, 1, 4);
+    static int maxFpsFromSliderPercent(double percent) {
+        int step = clamp((int) Math.round(Math.max(0.0, Math.min(1.0, percent)) * FPS_SLIDER_STEPS), 0, FPS_SLIDER_STEPS);
+        if (step == 0) {
+            return FPS_VSYNC;
+        }
+        if (step == FPS_SLIDER_STEPS) {
+            return FPS_UNLIMITED;
+        }
+        return 20 + step * 10;
+    }
+
+    static double maxFpsSliderPercent(int maxFps) {
+        int normalized = normalizeMaxFps(maxFps);
+        if (normalized == FPS_VSYNC) {
+            return 0.0;
+        }
+        if (normalized == FPS_UNLIMITED) {
+            return 1.0;
+        }
+        return (1.0 + (normalized - FPS_MIN) / 10.0) / FPS_SLIDER_STEPS;
+    }
+
+    static int nudgeMaxFps(int maxFps, int direction) {
+        int normalized = normalizeMaxFps(maxFps);
+        if (direction == 0) {
+            return normalized;
+        }
+        if (normalized == FPS_VSYNC) {
+            return direction > 0 ? FPS_MIN : FPS_VSYNC;
+        }
+        if (normalized == FPS_UNLIMITED) {
+            return direction < 0 ? FPS_MAX : FPS_UNLIMITED;
+        }
+        if (direction > 0) {
+            int next = ((normalized / 10) + 1) * 10;
+            return next > FPS_MAX ? FPS_UNLIMITED : next;
+        }
+        int previous = ((normalized - 1) / 10) * 10;
+        return previous < FPS_MIN ? FPS_VSYNC : previous;
+    }
+
+    static String maxFpsDisplayValue(int maxFps) {
+        int normalized = normalizeMaxFps(maxFps);
+        if (normalized == FPS_VSYNC) {
+            return "VSync";
+        }
+        if (normalized == FPS_UNLIMITED) {
+            return isRussian() ? "\u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c" : "Unlimited";
+        }
+        return Integer.toString(normalized);
+    }
+
+    static String guiScaleDisplayValue() {
+        return guiScale == 0 ? (isRussian() ? "\u0410\u0432\u0442\u043e" : "Auto") : Integer.toString(clampGuiScale(guiScale));
+    }
+
+    private static int normalizeMaxFps(int value) {
+        if (value == FPS_VSYNC || value == FPS_UNLIMITED) {
+            return value;
+        }
+        return clamp(value, FPS_MIN, FPS_MAX);
+    }
+
+    private static int clampGuiScale(int value) {
+        return clamp(value, 0, 4);
     }
 
     private static int clampGraphicsQuality(int value) {
@@ -765,6 +868,7 @@ final class PlayerState extends Entity {
     double hungerDrainTimer = 0.0;
     double hungerDamageTimer = 0.0;
     double hungerRegenTimer = 0.0;
+    double hungerGraceRemaining = GameConfig.HUNGER_GRACE_SECONDS;
     double hunger = GameConfig.MAX_HUNGER;
     int armorProtection = 0;
     boolean headInWater;
@@ -841,8 +945,11 @@ final class Chunk {
     final int chunkY;
     final int chunkZ;
     private final ArrayList<BlockState> palette = new ArrayList<>();
-    private final int[] blockStateIndices = new int[VOLUME];
-    private final byte[] fluidDistance = new byte[VOLUME];
+    private byte[] blockStateIndices = new byte[VOLUME];
+    private short[] wideBlockStateIndices;
+    private int[] fullBlockStateIndices;
+    private byte[] fluidDistance;
+    private int fluidCellCount;
     private int nonAirBlockCount;
     private int version;
     private int cachedSnapshotVersion = -1;
@@ -853,7 +960,6 @@ final class Chunk {
         this.chunkY = chunkY;
         this.chunkZ = chunkZ;
         palette.add(Blocks.stateFromLegacyId(GameConfig.AIR));
-        Arrays.fill(fluidDistance, (byte) -1);
     }
 
     synchronized ChunkSectionSnapshot snapshot() {
@@ -867,7 +973,7 @@ final class Chunk {
             BlockState state = blockStateAtIndexUnchecked(index);
             states[index] = state;
             blocks[index] = Blocks.legacyIdFromState(state);
-            distances[index] = fluidDistance[index];
+            distances[index] = (byte) fluidDistanceAtIndexUnchecked(index);
         }
         cachedSnapshot = new ChunkSectionSnapshot(chunkX, chunkY, chunkZ, blocks, states, distances, nonAirBlockCount, version);
         cachedSnapshotVersion = version;
@@ -903,7 +1009,7 @@ final class Chunk {
         if (!GameConfig.isChunkLocalCoordinateInside(localX, localY, localZ)) {
             return -1;
         }
-        return fluidDistance[index(localX, localY, localZ)];
+        return fluidDistanceAtIndexUnchecked(index(localX, localY, localZ));
     }
 
     synchronized void setFluidDistanceLocal(int localX, int localY, int localZ, int distance) {
@@ -911,9 +1017,7 @@ final class Chunk {
             return;
         }
         int index = index(localX, localY, localZ);
-        byte next = (byte) distance;
-        if (fluidDistance[index] != next) {
-            fluidDistance[index] = next;
+        if (setFluidDistanceAtIndexUnchecked(index, (byte) distance)) {
             version++;
         }
     }
@@ -937,7 +1041,7 @@ final class Chunk {
         if (index < 0 || index >= VOLUME) {
             return -1;
         }
-        return fluidDistance[index];
+        return fluidDistanceAtIndexUnchecked(index);
     }
 
     synchronized void setSerializedCell(int index, byte block, int distance) {
@@ -950,13 +1054,11 @@ final class Chunk {
         }
 
         int previousVersion = version;
-        setBlockStateAtIndex(index, state);
-        byte nextDistance = state.type.isLiquid() ? (byte) distance : (byte) -1;
-        if (fluidDistance[index] != nextDistance) {
-            fluidDistance[index] = nextDistance;
-            if (version == previousVersion) {
-                version++;
-            }
+        BlockState normalized = state == null ? Blocks.stateFromLegacyId(GameConfig.AIR) : state;
+        setBlockStateAtIndex(index, normalized);
+        byte nextDistance = normalized.type.isLiquid() ? (byte) distance : (byte) -1;
+        if (setFluidDistanceAtIndexUnchecked(index, nextDistance) && version == previousVersion) {
+            version++;
         }
     }
 
@@ -978,19 +1080,94 @@ final class Chunk {
             nonAirBlockCount--;
         }
 
-        blockStateIndices[index] = paletteIndexFor(normalized);
+        setPaletteIndexAt(index, paletteIndexFor(normalized));
         if (!normalized.type.isLiquid()) {
-            fluidDistance[index] = -1;
+            setFluidDistanceAtIndexUnchecked(index, (byte) -1);
         }
         version++;
     }
 
     private BlockState blockStateAtIndexUnchecked(int index) {
-        int paletteIndex = blockStateIndices[index];
+        int paletteIndex = paletteIndexAt(index);
         if (paletteIndex < 0 || paletteIndex >= palette.size()) {
             return Blocks.stateFromLegacyId(GameConfig.AIR);
         }
         return palette.get(paletteIndex);
+    }
+
+    private int paletteIndexAt(int index) {
+        if (fullBlockStateIndices != null) {
+            return fullBlockStateIndices[index];
+        }
+        if (wideBlockStateIndices != null) {
+            return wideBlockStateIndices[index] & 0xFFFF;
+        }
+        return blockStateIndices[index] & 0xFF;
+    }
+
+    private void setPaletteIndexAt(int index, int paletteIndex) {
+        if (wideBlockStateIndices == null && paletteIndex > 0xFF) {
+            wideBlockStateIndices = new short[VOLUME];
+            for (int cell = 0; cell < VOLUME; cell++) {
+                wideBlockStateIndices[cell] = (short) (blockStateIndices[cell] & 0xFF);
+            }
+            blockStateIndices = null;
+        }
+        if (fullBlockStateIndices == null && paletteIndex > 0xFFFF) {
+            fullBlockStateIndices = new int[VOLUME];
+            for (int cell = 0; cell < VOLUME; cell++) {
+                fullBlockStateIndices[cell] = wideBlockStateIndices[cell] & 0xFFFF;
+            }
+            wideBlockStateIndices = null;
+        }
+        if (fullBlockStateIndices != null) {
+            fullBlockStateIndices[index] = paletteIndex;
+        } else if (wideBlockStateIndices != null) {
+            wideBlockStateIndices[index] = (short) paletteIndex;
+        } else {
+            blockStateIndices[index] = (byte) paletteIndex;
+        }
+    }
+
+    synchronized int blockStateIndexStorageBytesForDebug() {
+        if (fullBlockStateIndices != null) {
+            return fullBlockStateIndices.length * Integer.BYTES;
+        }
+        if (wideBlockStateIndices != null) {
+            return wideBlockStateIndices.length * Short.BYTES;
+        }
+        return blockStateIndices.length;
+    }
+
+    synchronized int fluidDistanceStorageBytesForDebug() {
+        return fluidDistance == null ? 0 : fluidDistance.length;
+    }
+
+    private int fluidDistanceAtIndexUnchecked(int index) {
+        return fluidDistance == null ? -1 : fluidDistance[index];
+    }
+
+    private boolean setFluidDistanceAtIndexUnchecked(int index, byte next) {
+        int previous = fluidDistanceAtIndexUnchecked(index);
+        if (previous == next) {
+            return false;
+        }
+        if (next != -1 && fluidDistance == null) {
+            fluidDistance = new byte[VOLUME];
+            Arrays.fill(fluidDistance, (byte) -1);
+        }
+        if (previous == -1 && next != -1) {
+            fluidCellCount++;
+        } else if (previous != -1 && next == -1) {
+            fluidCellCount--;
+        }
+        if (fluidDistance != null) {
+            fluidDistance[index] = next;
+        }
+        if (fluidCellCount == 0) {
+            fluidDistance = null;
+        }
+        return true;
     }
 
     static boolean validatePaletteForDebug() {
@@ -1098,6 +1275,8 @@ final class ChunkMesh {
     int opaqueVaoId;
     int opaqueVboId;
     int opaqueVertexCount;
+    int[] opaqueVertices = new int[0];
+    int opaqueIntCount;
     int transparentVaoId;
     int transparentVboId;
     int transparentVertexCount;
